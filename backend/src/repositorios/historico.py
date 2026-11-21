@@ -1,5 +1,5 @@
 """CRUD del historico de publicaciones con sp_cargar_historico (inserta o actualiza)
-y sp_eliminar_historico. El procedimiento recibe 33 parametros: aqui se piden al
+y sp_eliminar_historico (borrado logico). El procedimiento recibe 33 parametros: aqui se piden al
 usuario solo los esenciales y el resto se completa con valores por defecto."""
 import hashlib
 import uuid as _uuid
@@ -24,7 +24,8 @@ ARRAYS = ("contributors", "identifiers", "electronic_versions", "keywords_groups
           "publication_status")
 
 _SQL_LISTAR = """
-SELECT h.uuid::text AS uuid, h.title, h.publication_year, h.type, h.language, h.category
+SELECT h.uuid::text AS uuid, h.title, h.publication_year, h.type, h.language, h.category,
+       h.activo, h.fecha_baja, h.motivo_baja
 FROM historico h
 {filtro}
 ORDER BY h.publication_year DESC, h.title
@@ -50,15 +51,23 @@ WHERE h.uuid = %s::uuid
 """
 
 
-def listar(filtro=""):
+def listar_detalle(filtro="", estado="activos"):
+    """Diccionarios del catalogo de publicaciones. estado: activos | bajas | todos."""
+    condiciones, parametros = [], []
     filtro = (filtro or "").strip()
     if filtro:
-        sql = _SQL_LISTAR.format(filtro="WHERE h.title ILIKE %s")
-        filas = consultar_dicts(sql, (f"%{filtro}%",))
-    else:
-        filas = consultar_dicts(_SQL_LISTAR.format(filtro=""))
+        condiciones.append("h.title ILIKE %s")
+        parametros.append(f"%{filtro}%")
+    condicion_estado = u.condicion_estado(estado, "h")
+    if condicion_estado:
+        condiciones.append(condicion_estado)
+    where = ("WHERE " + " AND ".join(condiciones)) if condiciones else ""
+    return consultar_dicts(_SQL_LISTAR.format(filtro=where), tuple(parametros) or None)
+
+
+def listar(filtro="", estado="activos"):
     return [(f["uuid"], f["title"], f["publication_year"], f["type"], f["language"],
-             f["category"]) for f in filas]
+             f["category"]) for f in listar_detalle(filtro, estado)]
 
 
 def obtener(uuid_texto):
@@ -177,6 +186,12 @@ def parametros_importacion(d, coordinador, uuid_fuente):
     return parametros, tipos
 
 
-def eliminar(uuid_texto):
+def eliminar(uuid_texto, motivo=None):
+    """Borrado logico: la publicacion queda inactiva con fecha y motivo de baja."""
     ejecutar_procedimiento("sp_eliminar_historico",
-                           [u.obligatorio(uuid_texto, "El UUID")], ["uuid"])
+                           [u.obligatorio(uuid_texto, "El UUID"), u.texto_opcional(motivo)],
+                           ["uuid", "varchar"])
+
+
+def reactivar(uuid_texto):
+    ejecutar_procedimiento("sp_reactivar_historico", [u.obligatorio(uuid_texto, "El UUID")], ["uuid"])

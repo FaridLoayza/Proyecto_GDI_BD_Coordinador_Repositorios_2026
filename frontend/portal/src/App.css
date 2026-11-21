@@ -254,3 +254,9 @@ tbody tr:nth-child(even) { background: #f7faf8; }
 .admin-pagination { display: flex; gap: 12px; align-items: center; justify-content: flex-end; margin-top: 12px; }
 .admin-access-link { text-align: center; margin-top: 8px; }
 @media (max-width: 800px) { .admin-layout { grid-template-columns: 1fr; } .admin-tables nav { max-height: 200px; } }
+
+/* Borrado lógico */
+.estado-filter { min-width: 160px; }
+.baja-panel { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line, #e3e8e4); }
+.baja-panel .field { width: 100%; }
+.publication-result .status { align-self: flex-start; margin-top: 4px; }

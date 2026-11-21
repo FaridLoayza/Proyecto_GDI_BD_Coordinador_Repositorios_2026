@@ -4,8 +4,10 @@ Seguridad:
 - Los nombres de tablas y columnas se toman SOLO del catálogo de PostgreSQL
   (esquema public); lo que envía el usuario se compara contra esa lista y se
   inserta con psycopg2.sql.Identifier, nunca concatenado.
-- Los valores viajan como parámetros y se convierten con el tipo real de la
-  columna (format_type del catálogo).
+- Insertar, modificar y eliminar se hacen con los procedimientos
+  sp_admin_insertar, sp_admin_actualizar y sp_admin_eliminar; los valores
+  viajan en JSONB y la base los convierte al tipo real de cada columna.
+- Las tablas con borrado lógico (activo + fecha_baja) se dan de baja.
 - Las restricciones, claves foráneas y triggers de la base siguen aplicando.
 - Si config.ini tiene la sección [postgresql_admin], el CRUD se conecta con
   ese usuario (p. ej. el rol admin_cris); si no, con la conexión normal.
@@ -20,6 +22,7 @@ import uuid
 
 import psycopg2
 from psycopg2 import sql
+from psycopg2.extras import Json
 
 from ..db.conexion import (
     ErrorOperacion,
@@ -228,11 +231,6 @@ def _valor_para_columna(col, valor):
     return str(valor)
 
 
-def _marcador(col):
-    # El tipo sale del catálogo (format_type), no del usuario.
-    return sql.SQL("%s::" + col["tipo"])
-
-
 def _columnas_por_nombre(desc):
     return {c["nombre"]: c for c in desc["columnas"]}
 
@@ -300,67 +298,83 @@ def listar_filas(tabla, pagina=1, tamano=25, buscar=None, cfg=None):
     }
 
 
-def crear(tabla, valores, cfg=None):
-    desc = describir(tabla, cfg)
-    cols = _columnas_por_nombre(desc)
+def _valor_para_procedimiento(col, valor):
+    """Valor que viaja dentro del JSONB hacia sp_admin_*: jsonb_populate_record lo
+    convierte al tipo real de la columna."""
+    if valor is None or valor == "":
+        return None
+    if col["tipo"] in ("json", "jsonb") and isinstance(valor, str):
+        try:
+            return json.loads(valor)
+        except ValueError:
+            raise ErrorOperacion(f"La columna {col['nombre']} debe contener JSON válido.") from None
+    return _valor_para_columna(col, valor)
+
+
+def _llamar(procedimiento, parametros, cfg):
+    """CALL a un procedimiento sp_admin_* y devuelve su parámetro INOUT."""
+    conn = conectar(cfg or configuracion_crud())
+    try:
+        with conn.cursor() as cur:
+            marcas = ", ".join(["%s"] * len(parametros) + ["NULL"])
+            cur.execute(f"CALL {procedimiento}({marcas})", parametros)
+            resultado = cur.fetchone()[0]
+        conn.commit()
+        return resultado
+    except psycopg2.Error as exc:
+        conn.rollback()
+        if exc.pgcode == "P0002":      # no_data_found
+            raise NoEncontrado(_mensaje_operacion(exc)) from exc
+        raise ErrorOperacion(_mensaje_operacion(exc)) from exc
+    finally:
+        conn.close()
+
+
+def _fila_desde_json(desc, fila):
+    nombres = [c["nombre"] for c in desc["columnas"]]
+    return _fila_json(nombres, [(fila or {}).get(n) for n in nombres])
+
+
+def _validar_columnas(cols, valores):
     desconocidas = set(valores) - set(cols)
     if desconocidas:
         raise ErrorOperacion("Columnas desconocidas: " + ", ".join(sorted(desconocidas)) + ".")
-    usar = [n for n, v in valores.items() if not cols[n]["solo_lectura"] and v is not None and v != ""]
-    if usar:
-        consulta = sql.SQL("INSERT INTO {tabla} ({cols}) VALUES ({vals}) RETURNING *").format(
-            tabla=sql.Identifier(tabla),
-            cols=sql.SQL(", ").join(sql.Identifier(n) for n in usar),
-            vals=sql.SQL(", ").join(_marcador(cols[n]) for n in usar),
-        )
-        parametros = [_valor_para_columna(cols[n], valores[n]) for n in usar]
-    else:
-        consulta = sql.SQL("INSERT INTO {tabla} DEFAULT VALUES RETURNING *").format(tabla=sql.Identifier(tabla))
-        parametros = []
-    columnas, filas, _ = _ejecutar(consulta, parametros, cfg)
-    return _fila_json(columnas, filas[0])
+
+
+def crear(tabla, valores, cfg=None):
+    """INSERT mediante el procedimiento sp_admin_insertar."""
+    desc = describir(tabla, cfg)
+    cols = _columnas_por_nombre(desc)
+    _validar_columnas(cols, valores)
+    datos = {n: _valor_para_procedimiento(cols[n], v) for n, v in valores.items()
+             if not cols[n]["solo_lectura"] and v is not None and v != ""}
+    fila = _llamar("sp_admin_insertar", [tabla, Json(datos)], cfg)
+    return _fila_desde_json(desc, fila)
 
 
 def actualizar(tabla, clave, valores, cfg=None):
+    """UPDATE mediante el procedimiento sp_admin_actualizar."""
     desc = describir(tabla, cfg)
     cols = _columnas_por_nombre(desc)
     pk = _validar_clave(desc, clave)
-    desconocidas = set(valores) - set(cols)
-    if desconocidas:
-        raise ErrorOperacion("Columnas desconocidas: " + ", ".join(sorted(desconocidas)) + ".")
+    _validar_columnas(cols, valores)
     # Una columna sensible enmascarada o vacía significa "no cambiar".
-    usar = [
-        n for n, v in valores.items()
+    datos = {
+        n: _valor_para_procedimiento(cols[n], v) for n, v in valores.items()
         if not cols[n]["solo_lectura"]
         and not (cols[n]["sensible"] and (v in (None, "", MASCARA)))
-    ]
-    if not usar:
+    }
+    if not datos:
         raise ErrorOperacion("No hay cambios para guardar.")
-    consulta = sql.SQL("UPDATE {tabla} SET {sets} WHERE {donde} RETURNING *").format(
-        tabla=sql.Identifier(tabla),
-        sets=sql.SQL(", ").join(
-            sql.SQL("{} = ").format(sql.Identifier(n)) + _marcador(cols[n]) for n in usar),
-        donde=sql.SQL(" AND ").join(
-            sql.SQL("{} = ").format(sql.Identifier(n)) + _marcador(cols[n]) for n in pk),
-    )
-    parametros = ([_valor_para_columna(cols[n], None if valores[n] == "" else valores[n]) for n in usar]
-                  + [_valor_para_columna(cols[n], clave[n]) for n in pk])
-    columnas, filas, _ = _ejecutar(consulta, parametros, cfg)
-    if not filas:
-        raise NoEncontrado("La fila ya no existe; recargue la tabla.")
-    return _fila_json(columnas, filas[0])
+    clave_json = {n: _valor_para_procedimiento(cols[n], clave[n]) for n in pk}
+    fila = _llamar("sp_admin_actualizar", [tabla, Json(clave_json), Json(datos)], cfg)
+    return _fila_desde_json(desc, fila)
 
 
 def eliminar(tabla, clave, cfg=None):
+    """DELETE (o baja lógica si la tabla la tiene) mediante sp_admin_eliminar."""
     desc = describir(tabla, cfg)
     cols = _columnas_por_nombre(desc)
     pk = _validar_clave(desc, clave)
-    consulta = sql.SQL("DELETE FROM {tabla} WHERE {donde}").format(
-        tabla=sql.Identifier(tabla),
-        donde=sql.SQL(" AND ").join(
-            sql.SQL("{} = ").format(sql.Identifier(n)) + _marcador(cols[n]) for n in pk),
-    )
-    _, _, afectadas = _ejecutar(consulta, [_valor_para_columna(cols[n], clave[n]) for n in pk], cfg, devolver=False)
-    if not afectadas:
-        raise NoEncontrado("La fila ya no existe; recargue la tabla.")
-    return afectadas
+    clave_json = {n: _valor_para_procedimiento(cols[n], clave[n]) for n in pk}
+    return _llamar("sp_admin_eliminar", [tabla, Json(clave_json)], cfg)

@@ -1,5 +1,5 @@
-"""Reportes: las 15 consultas de solo lectura y el procedimiento sp_generar_reporte."""
-from ..db.conexion import consultar_dicts, ejecutar_consulta, ejecutar_procedimiento
+"""Reportes: las 15 consultas (procedimientos sp_reporte_NN) y sp_generar_reporte."""
+from ..db.conexion import consultar_dicts, ejecutar_procedimiento, ejecutar_reporte
 from . import utilidades as u
 from .catalogo_reportes import CONSULTAS
 
@@ -17,24 +17,32 @@ SECCIONES = [
 
 
 _SQL_INDICADORES = """
-SELECT (SELECT COUNT(*) FROM investigador)                                        AS investigadores,
-       (SELECT COUNT(DISTINCT escuela_profesional) FROM investigador)             AS escuelas,
-       (SELECT COUNT(*) FROM historico)                                           AS publicaciones,
-       (SELECT COUNT(*) FROM patente)                                             AS patentes,
-       (SELECT COUNT(DISTINCT substring(ods FROM '^ODS ([0-9]+):')) FROM formato_inv_ods) AS ods_vinculados
+SELECT (SELECT COUNT(*) FROM investigador WHERE activo)                         AS investigadores,
+       (SELECT COUNT(DISTINCT escuela_profesional) FROM investigador WHERE activo) AS escuelas,
+       (SELECT COUNT(*) FROM historico WHERE activo)                            AS publicaciones,
+       (SELECT COUNT(*) FROM patente WHERE activo)                              AS patentes,
+       (SELECT COUNT(DISTINCT substring(o.ods FROM '^ODS ([0-9]+):'))
+          FROM formato_inv_ods o
+          JOIN formato_investigador fi ON fi.n_formato_inv = o.n_formato_inv
+          JOIN investigador i ON i.codigo_ucsm = fi.codigo_ucsm
+         WHERE i.activo)                                                         AS ods_vinculados
 """
 
 _SQL_RANKING_ODS = """
-SELECT MIN(ods) AS ods, COUNT(*) AS total
-FROM formato_inv_ods
-GROUP BY substring(ods FROM '^ODS [0-9]+')
-ORDER BY total DESC, MIN(ods)
+SELECT MIN(o.ods) AS ods, COUNT(*) AS total
+FROM formato_inv_ods o
+JOIN formato_investigador fi ON fi.n_formato_inv = o.n_formato_inv
+JOIN investigador i ON i.codigo_ucsm = fi.codigo_ucsm
+WHERE i.activo
+GROUP BY substring(o.ods FROM '^ODS [0-9]+')
+ORDER BY total DESC, MIN(o.ods)
 LIMIT 5
 """
 
 _SQL_TOP_ESCUELAS = """
 SELECT escuela_profesional AS escuela, COUNT(*) AS total
 FROM investigador
+WHERE activo
 GROUP BY escuela_profesional
 ORDER BY total DESC, escuela_profesional
 LIMIT 3
@@ -56,10 +64,10 @@ def catalogo():
 
 
 def ejecutar(id_consulta):
-    """Ejecuta una consulta del catalogo y devuelve (titulo, columnas, filas)."""
+    """Ejecuta el procedimiento del reporte y devuelve (titulo, columnas, filas)."""
     for c in CONSULTAS:
         if c["id"] == id_consulta:
-            columnas, filas = ejecutar_consulta(c["sql"])
+            columnas, filas = ejecutar_reporte(c["procedimiento"])
             return c["titulo"], columnas, filas
     raise u.ErrorOperacion(f"No existe la consulta {id_consulta}.")
 

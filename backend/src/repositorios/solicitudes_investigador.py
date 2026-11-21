@@ -185,7 +185,7 @@ def perfiles_pure_pendientes():
                i.correo_elec, i.pure_estado
           FROM investigador i
           JOIN persona p ON p.dni = i.dni
-         WHERE i.pure_estado = 'pendiente_manual'
+         WHERE i.pure_estado = 'pendiente_manual' AND i.activo
          ORDER BY p.apellido_paterno, p.nombres
     """)
 

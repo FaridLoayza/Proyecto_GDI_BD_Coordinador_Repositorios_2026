@@ -32,7 +32,7 @@ MENSAJES_RESTRICCION = {
     "ck_persona_dni": "El DNI debe tener exactamente 8 digitos.",
     "persona_genero_check": "El genero debe ser Femenino o Masculino.",
     "persona_fecha_nacimiento_check": "La fecha de nacimiento debe ser anterior a hoy.",
-    "ck_investigador_codigo": "El codigo UCSM debe tener 10 digitos.",
+    "ck_investigador_codigo": "El codigo institucional debe tener 10 digitos.",
     "ck_investigador_celular": "El celular debe tener 9 digitos y empezar con 9.",
     "ck_investigador_correo": "El correo no tiene un formato valido.",
     "ck_formato_inv_orcid": "El ORCID debe tener el formato 0000-0000-0000-000X.",
@@ -175,6 +175,30 @@ def ejecutar_procedimiento(nombre, parametros=(), tipos=None, cfg=None):
         with conn.cursor() as cur:
             cur.execute(f"CALL {nombre}({marcas})", parametros)
         conn.commit()
+    except psycopg2.Error as e:
+        conn.rollback()
+        raise ErrorOperacion(_mensaje_operacion(e)) from e
+    finally:
+        conn.close()
+
+
+def ejecutar_reporte(nombre, cfg=None):
+    """
+    Ejecuta un procedimiento de reporte (sp_reporte_NN). El procedimiento abre
+    un cursor con el resultado: CALL nombre('reporte') y FETCH ALL FROM reporte
+    en la misma transaccion. Devuelve (nombres_de_columnas, filas).
+    """
+    if not _NOMBRE_SQL.match(nombre):
+        raise ValueError("Nombre de procedimiento invalido: " + nombre)
+    conn = conectar(cfg)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"CALL {nombre}(%s)", ("reporte",))
+            cur.execute('FETCH ALL FROM "reporte"')
+            columnas = [d[0] for d in cur.description]
+            filas = cur.fetchall()
+        conn.commit()
+        return columnas, filas
     except psycopg2.Error as e:
         conn.rollback()
         raise ErrorOperacion(_mensaje_operacion(e)) from e

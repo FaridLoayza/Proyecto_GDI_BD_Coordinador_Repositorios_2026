@@ -1,4 +1,4 @@
-# Repositorios UCSM - Aplicativo
+# Portal CRIS - Aplicativo (Grupo 01)
 
 Aplicativo web para registrar y revisar postulaciones de investigadores, gestionar
 solicitudes de patentes e importar publicaciones de investigación. Utiliza PostgreSQL
@@ -11,6 +11,15 @@ solicitudes de patentes e importar publicaciones de investigación. Utiliza Post
 - Registro y seguimiento de solicitudes de patentes.
 - Importación de publicaciones desde CSV de Pure y revisión de registros pendientes.
 - Directorio de investigadores y reportes del repositorio.
+- 15 reportes (consultas) implementados como procedimientos almacenados
+  `sp_reporte_01` ... `sp_reporte_15`; 8 de ellos usan JOIN.
+- Borrado lógico de investigadores, patentes y publicaciones: "dar de baja" y
+  "reactivar" mediante `sp_eliminar_*` y `sp_reactivar_*` (los registros no se borran).
+- Panel de administrador con CRUD sobre todas las tablas mediante los procedimientos
+  `sp_admin_insertar`, `sp_admin_actualizar` y `sp_admin_eliminar`.
+- Ejecutable de Windows `PortalCRIS.exe` (sección *Ejecutable de Windows*).
+
+Las cuentas de prueba están en [CREDENCIALES_PRUEBA.md](CREDENCIALES_PRUEBA.md).
 
 ## Estructura
 
@@ -21,12 +30,18 @@ repositorios_ucsm/
     config.ini.example           Plantilla de conexión a PostgreSQL
     requirements.txt             Dependencias de Python
     database/
-      base_datos_repositorio.sql Esquema de la base de datos
+      base_datos_repositorio.sql Script completo: tablas, procedimientos, triggers y datos de prueba
+      migracion_*.sql            Migraciones para bases instaladas con versiones anteriores
+      rol_admin_cris.sql         Rol de PostgreSQL con permisos CRUD
       instalar_bd.py             Instalador del esquema
+      crear_admin.py             Crea la cuenta de administrador del portal
+    lanzador_windows.py          Punto de entrada de PortalCRIS.exe
     pruebas/                      Pruebas del backend y la base de datos
     src/db/conexion.py            Conexión y consultas PostgreSQL
   frontend/
     portal/                       Aplicación web en React y Vite
+  entrega/ejecutable/             Archivos de la carpeta EJECUTABLE del release
+  .github/workflows/              Generación automática del release para Windows
 ```
 
 ## Puesta en marcha
@@ -61,8 +76,16 @@ repositorios_ucsm/
    & "C:\Program Files\PostgreSQL\16\bin\psql.exe" -U postgres -d bd_coordinador_repositorios -f backend\database\migracion_scopus_opcional.sql
    ```
 
-   Si la base ya estaba instalada antes de la cuenta de administrador, ejecutar
+   Si la base ya estaba instalada antes de la entrega 5 (borrado lógico, reportes
+   como procedimientos y CRUD del administrador por procedimientos), ejecutar
    también una sola vez:
+
+   ```powershell
+   & "C:\Program Files\PostgreSQL\16\bin\psql.exe" -U postgres -d bd_coordinador_repositorios -f backend\database\migracion_entrega5.sql
+   ```
+
+   Si la base ya estaba instalada antes de la cuenta de administrador, ejecutar
+   también una sola vez (antes de la migración anterior):
 
    ```powershell
    & "C:\Program Files\PostgreSQL\16\bin\psql.exe" -U postgres -d bd_coordinador_repositorios -f backend\database\migracion_cuenta_administrador.sql
@@ -126,6 +149,20 @@ Hay dos cuentas de administrador, independientes del flujo investigador/coordina
 
   Opcionalmente, la sección `[postgresql_admin]` de `config.ini` hace que el panel
   admin se conecte a la base con ese rol.
+
+## Ejecutable de Windows
+
+Cada tag `vX.Y.Z` publica en *Releases* un `.zip` con la carpeta EJECUTABLE:
+`PortalCRIS.exe`, `Portal CRIS.cmd` (archivo de inicio que funciona desde cualquier
+ruta), `Portal CRIS.url` (acceso directo a `http://127.0.0.1:8000`), `config.ini.example`,
+`LEEME.txt`, `CREDENCIALES_PRUEBA.txt` y la carpeta `sql`. Solo requiere PostgreSQL 16:
+
+```powershell
+PortalCRIS.exe --instalar-bd
+```
+
+crea la base con el esquema y los datos de prueba, y `PortalCRIS.exe --crear-admin`
+crea una cuenta de administrador.
 
 ## Pruebas
 

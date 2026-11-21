@@ -1,18 +1,27 @@
-"""Instala desde cero el esquema CRIS y los datos demostrativos.
+"""Instala desde cero el esquema CRIS y los datos de prueba.
+
+Uso:  python backend/database/instalar_bd.py      (o  PortalCRIS.exe --instalar-bd)
 
 Crea la base 'bd_coordinador_repositorios' si no existe y luego instala el esquema.
 """
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import psycopg2
 
-from src.db.conexion import ErrorConexion, conectar, leer_configuracion
+try:  # dentro de PortalCRIS.exe (o importado como paquete desde la raiz)
+    from backend.src.db.conexion import ErrorConexion, conectar, leer_configuracion
+except ImportError:  # python backend/database/instalar_bd.py
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+    from src.db.conexion import ErrorConexion, conectar, leer_configuracion
 
-SCRIPT = os.path.join(os.path.dirname(__file__), "base_datos_repositorio.sql")
+if getattr(sys, "frozen", False):  # el script SQL viaja empaquetado dentro del .exe
+    SCRIPT = os.path.join(sys._MEIPASS, "backend", "database", "base_datos_repositorio.sql")
+else:
+    SCRIPT = os.path.join(os.path.dirname(__file__), "base_datos_repositorio.sql")
 TABLAS_ESPERADAS = 43
-NOMBRE_BASE = "bd_coordinador_repositorios"
+# Se puede instalar en otra base (por ejemplo, para pruebas) con PORTAL_DB_NAME.
+NOMBRE_BASE = os.getenv("PORTAL_DB_NAME", "bd_coordinador_repositorios")
 BASE_ADMINISTRATIVA = "postgres"  # base que siempre existe; desde aqui se crea NOMBRE_BASE
 
 

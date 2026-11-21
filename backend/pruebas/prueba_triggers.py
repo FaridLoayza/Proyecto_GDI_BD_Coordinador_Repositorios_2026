@@ -1,5 +1,7 @@
 """
-Demuestra que cada uno de los 5 triggers se dispara.
+Demuestra que cada uno de los triggers se dispara. Los de borrado fisico
+(A.2 y A.4) se prueban con DELETE directo, porque los procedimientos sp_eliminar_*
+hacen un borrado logico, que se prueba en F.1.
 Uso:  python backend/pruebas/prueba_triggers.py
 """
 import time
@@ -7,8 +9,9 @@ from datetime import date
 
 import psycopg2
 
-from _comun import (COD, COORD, D_HIS, D_INV, D_PAT, PAT, escalar, esperar_error, historico,
-                    investigadores, limpiar, paso, patentes, probar, terminar)
+from _comun import (COD, COORD, D_HIS, D_INV, D_PAT, PAT, borrar_investigador, borrar_patente,
+                    escalar, esperar_error, historico, investigadores, limpiar, paso, patentes,
+                    probar, terminar)
 from src.db.conexion import conectar, ejecutar_sentencia
 
 
@@ -27,7 +30,7 @@ def trg_normalizar():
 def trg_borrar_inventor():
     print("\n--- A.2 trg_investigador_antes_borrar ---")
     probar("Registrar patente con el investigador como inventor", patentes.registrar, D_PAT, COORD)
-    esperar_error("Borrar a un investigador que es inventor", investigadores.eliminar, COD,
+    esperar_error("Borrar (DELETE) a un investigador que es inventor", borrar_investigador, COD,
                   contiene="inventor")
     paso(investigadores.obtener(COD) is not None, "El investigador sigue existiendo (se revirtio)")
 
@@ -35,7 +38,7 @@ def trg_borrar_inventor():
 def trg_borrar_patente():
     print("\n--- A.4 trg_patente_antes_borrar ---")
     formato = escalar("SELECT n_formato_pat FROM formato_patente WHERE n_patente = %s", (PAT,))
-    probar("Eliminar la patente (sp_eliminar_patente)", patentes.eliminar, PAT)
+    probar("Borrar la patente (DELETE fisico)", borrar_patente, PAT)
     restos = sum(escalar(f"SELECT COUNT(*) FROM {t} WHERE n_formato_pat = %s", (formato,))
                  for t in ("formato_patente", "formato_paten_inventores", "formato_paten_ocde",
                            "formato_patente_investigador"))
@@ -45,7 +48,7 @@ def trg_borrar_patente():
 def trg_borrar_investigador():
     print("\n--- A.2 (cascada) borrar investigador limpia su formato ---")
     formato = escalar("SELECT n_formato_inv FROM formato_investigador WHERE codigo_ucsm = %s", (COD,))
-    probar("Eliminar investigador (ya sin patentes)", investigadores.eliminar, COD)
+    probar("Borrar investigador (DELETE fisico, ya sin patentes)", borrar_investigador, COD)
     restos = sum(escalar(f"SELECT COUNT(*) FROM {t} WHERE n_formato_inv = %s", (formato,))
                  for t in ("formato_investigador", "formato_inv_ods", "formato_inv_intereses"))
     paso(restos == 0, "Se eliminaron su formato, ODS e intereses")
@@ -88,6 +91,26 @@ def trg_synced_at():
     paso(despues > antes, f"synced_at se actualizo solo ({antes:%H:%M:%S.%f} -> {despues:%H:%M:%S.%f})")
 
 
+def trg_baja_logica():
+    print("\n--- F.1 trg_*_baja (borrado logico) ---")
+    probar("Registrar investigador", investigadores.registrar, D_INV, COORD)
+    probar("Dar de baja (sp_eliminar_investigador)", investigadores.eliminar, COD, "Motivo de prueba")
+    f = investigadores.obtener(COD)
+    paso(f["activo"] is False and f["fecha_baja"] is not None, "El trigger registro la fecha de baja")
+    probar("Reactivar (sp_reactivar_investigador)", investigadores.reactivar, COD)
+    f = investigadores.obtener(COD)
+    paso(f["activo"] is True and f["fecha_baja"] is None and f["motivo_baja"] is None,
+         "Al reactivar, el trigger limpio la fecha y el motivo")
+    ok, uid = probar("Cargar publicacion", historico.guardar, D_HIS, COORD,
+                     fecha_reporte=date(2000, 1, 1))
+    if ok:
+        antes = historico.obtener(uid)["synced_at"]
+        time.sleep(0.1)
+        probar("Dar de baja la publicacion", historico.eliminar, uid)
+        paso(historico.obtener(uid)["synced_at"] == antes,
+             "Dar de baja no cuenta como re-sincronizacion (synced_at no cambia)")
+
+
 def main():
     print("=== Prueba de triggers ===")
     limpiar()
@@ -98,6 +121,8 @@ def main():
         trg_borrar_investigador()
         trg_patente_requiere_inventor()
         trg_synced_at()
+        limpiar()
+        trg_baja_logica()
     finally:
         limpiar()
     return terminar()

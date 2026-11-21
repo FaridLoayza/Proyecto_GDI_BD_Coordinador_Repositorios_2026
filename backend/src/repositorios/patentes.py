@@ -1,4 +1,5 @@
-"""CRUD de patentes con procedimientos (sp_registrar/modificar/eliminar_patente)."""
+"""CRUD de patentes con procedimientos (sp_registrar/modificar/eliminar/reactivar_patente).
+Eliminar es un borrado logico (activo = FALSE)."""
 from ..db.conexion import consultar_dicts, ejecutar_procedimiento
 from . import utilidades as u
 
@@ -6,15 +7,17 @@ _SQL_LISTAR = """
 SELECT pa.n_patente, pa.titulo_patente, pa.fecha_registro, pa.pais,
        COALESCE((SELECT string_agg(i.inventores, '; ' ORDER BY i.inventores)
                    FROM formato_paten_inventores i
-                  WHERE i.n_formato_pat = fp.n_formato_pat), '') AS inventores
+                  WHERE i.n_formato_pat = fp.n_formato_pat), '') AS inventores,
+       pa.activo, pa.fecha_baja, pa.motivo_baja
 FROM patente pa
 JOIN formato_patente fp ON fp.n_patente = pa.n_patente
+{filtro}
 ORDER BY pa.fecha_registro DESC, pa.n_patente
 """
 
 _SQL_OBTENER = """
 SELECT pa.n_patente, pa.titulo_patente AS titulo, pa.editorial, pa.fecha_registro,
-       pa.cip, pa.pais,
+       pa.cip, pa.pais, pa.activo, pa.fecha_baja, pa.motivo_baja,
        COALESCE((SELECT array_agg(fi.codigo_ucsm ORDER BY fi.codigo_ucsm)
                    FROM formato_patente_investigador fpi
                    JOIN formato_investigador fi ON fi.n_formato_inv = fpi.n_formato_inv
@@ -29,9 +32,15 @@ WHERE pa.n_patente = %s
 """
 
 
-def listar():
+def listar_detalle(estado="activos"):
+    """Diccionarios del catalogo de patentes. estado: activos | bajas | todos."""
+    condicion = u.condicion_estado(estado, "pa")
+    return consultar_dicts(_SQL_LISTAR.format(filtro=f"WHERE {condicion}" if condicion else ""))
+
+
+def listar(estado="activos"):
     return [(f["n_patente"], f["titulo_patente"], f["fecha_registro"], f["pais"], f["inventores"])
-            for f in consultar_dicts(_SQL_LISTAR)]
+            for f in listar_detalle(estado)]
 
 
 def obtener(n_patente):
@@ -91,6 +100,12 @@ def modificar(n_patente, d):
                            [None] * 6 + ["bigint[]", "varchar[]", "varchar[]"])
 
 
-def eliminar(n_patente):
+def eliminar(n_patente, motivo=None):
+    """Borrado logico: la patente queda inactiva con fecha y motivo de baja."""
     ejecutar_procedimiento("sp_eliminar_patente",
-                           [u.obligatorio(n_patente, "El numero de patente")])
+                           [u.obligatorio(n_patente, "El numero de patente"), u.texto_opcional(motivo)],
+                           [None, "varchar"])
+
+
+def reactivar(n_patente):
+    ejecutar_procedimiento("sp_reactivar_patente", [u.obligatorio(n_patente, "El numero de patente")])

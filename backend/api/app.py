@@ -35,6 +35,7 @@ from .schemas import (
     AdminRowBody,
     AdminUpdateBody,
     ApplicationBody,
+    BajaBody,
     CandidateCurationBody,
     CandidateDecisionBody,
     CandidateDiscardBody,
@@ -141,7 +142,7 @@ def _session_secret():
     return secrets.token_urlsafe(48)
 
 
-app = FastAPI(title="Portal CRIS UCSM", version="1.0.0")
+app = FastAPI(title="Portal CRIS", version="1.2.0")
 app.add_middleware(
     SessionMiddleware,
     secret_key=_session_secret(),
@@ -503,18 +504,26 @@ def coordinator_dashboard(request: Request):
     return reportes.indicadores()
 
 
+ESTADO_QUERY = Query(default="activos", pattern="^(activos|bajas|todos)$")
+
+
+def _baja(row):
+    return {"activo": row["activo"], "fecha_baja": row["fecha_baja"], "motivo_baja": row["motivo_baja"]}
+
+
 @app.get("/api/coordinator/investigators")
-def coordinator_investigators(request: Request, search: str = ""):
+def coordinator_investigators(request: Request, search: str = "", estado: str = ESTADO_QUERY):
     _user(request, "coordinator")
     return [
         {
-            "codigo_ucsm": row[0],
-            "nombre": row[1],
-            "escuela": row[2],
-            "correo": row[3],
-            "celular": row[4],
+            "codigo_ucsm": row["codigo_ucsm"],
+            "nombre": row["nombre"],
+            "escuela": row["escuela_profesional"],
+            "correo": row["correo_elec"],
+            "celular": row["n_celular"],
+            **_baja(row),
         }
-        for row in investigadores.listar(search)
+        for row in investigadores.listar_detalle(search, estado)
     ]
 
 
@@ -528,17 +537,18 @@ def coordinator_investigator(codigo_ucsm: int, request: Request):
 
 
 @app.get("/api/coordinator/patent-registry")
-def coordinator_patent_registry(request: Request):
+def coordinator_patent_registry(request: Request, estado: str = ESTADO_QUERY):
     _user(request, "coordinator")
     return [
         {
-            "n_patente": row[0],
-            "titulo": row[1],
-            "fecha_registro": row[2],
-            "pais": row[3],
-            "inventores": row[4],
+            "n_patente": row["n_patente"],
+            "titulo": row["titulo_patente"],
+            "fecha_registro": row["fecha_registro"],
+            "pais": row["pais"],
+            "inventores": row["inventores"],
+            **_baja(row),
         }
-        for row in patentes.listar()
+        for row in patentes.listar_detalle(estado)
     ]
 
 
@@ -552,19 +562,63 @@ def coordinator_registered_patent(n_patente: str, request: Request):
 
 
 @app.get("/api/coordinator/publications")
-def coordinator_publications(request: Request, search: str = ""):
+def coordinator_publications(request: Request, search: str = "", estado: str = ESTADO_QUERY):
     _user(request, "coordinator")
     return [
         {
-            "uuid": row[0],
-            "titulo": row[1],
-            "anio": row[2],
-            "tipo": row[3],
-            "idioma": row[4],
-            "categoria": row[5],
+            "uuid": row["uuid"],
+            "titulo": row["title"],
+            "anio": row["publication_year"],
+            "tipo": row["type"],
+            "idioma": row["language"],
+            "categoria": row["category"],
+            **_baja(row),
         }
-        for row in historico.listar(search)
+        for row in historico.listar_detalle(search, estado)
     ]
+
+
+# --- Borrado lógico (dar de baja / reactivar) mediante procedimientos -------
+@app.post("/api/coordinator/investigators/{codigo_ucsm}/baja", dependencies=[Depends(require_csrf)])
+def coordinator_investigator_baja(codigo_ucsm: int, body: BajaBody, request: Request):
+    _user(request, "coordinator")
+    investigadores.eliminar(codigo_ucsm, body.motivo)
+    return {"ok": True, "activo": False}
+
+
+@app.post("/api/coordinator/investigators/{codigo_ucsm}/reactivar", dependencies=[Depends(require_csrf)])
+def coordinator_investigator_reactivar(codigo_ucsm: int, request: Request):
+    _user(request, "coordinator")
+    investigadores.reactivar(codigo_ucsm)
+    return {"ok": True, "activo": True}
+
+
+@app.post("/api/coordinator/patent-registry/{n_patente}/baja", dependencies=[Depends(require_csrf)])
+def coordinator_patent_baja(n_patente: str, body: BajaBody, request: Request):
+    _user(request, "coordinator")
+    patentes.eliminar(n_patente, body.motivo)
+    return {"ok": True, "activo": False}
+
+
+@app.post("/api/coordinator/patent-registry/{n_patente}/reactivar", dependencies=[Depends(require_csrf)])
+def coordinator_patent_reactivar(n_patente: str, request: Request):
+    _user(request, "coordinator")
+    patentes.reactivar(n_patente)
+    return {"ok": True, "activo": True}
+
+
+@app.post("/api/coordinator/publications/{publication_uuid}/baja", dependencies=[Depends(require_csrf)])
+def coordinator_publication_baja(publication_uuid: str, body: BajaBody, request: Request):
+    _user(request, "coordinator")
+    historico.eliminar(publication_uuid, body.motivo)
+    return {"ok": True, "activo": False}
+
+
+@app.post("/api/coordinator/publications/{publication_uuid}/reactivar", dependencies=[Depends(require_csrf)])
+def coordinator_publication_reactivar(publication_uuid: str, request: Request):
+    _user(request, "coordinator")
+    historico.reactivar(publication_uuid)
+    return {"ok": True, "activo": True}
 
 
 async def _pure_upload(file: UploadFile):
@@ -716,6 +770,7 @@ def coordinator_publication(publication_uuid: str, request: Request):
     return {
         "uuid": publication["uuid"],
         "formulario": historico.para_formulario(publication),
+        **_baja(publication),
     }
 
 
@@ -723,7 +778,8 @@ def coordinator_publication(publication_uuid: str, request: Request):
 def coordinator_report_catalog(request: Request):
     _user(request, "coordinator")
     return [
-        {"id": report_id, "titulo": title, "usa_join": uses_join}
+        {"id": report_id, "titulo": title, "usa_join": uses_join,
+         "procedimiento": f"sp_reporte_{report_id:02d}"}
         for report_id, title, uses_join in reportes.catalogo()
     ]
 
