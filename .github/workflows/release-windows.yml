@@ -67,8 +67,8 @@ jobs:
           Portal CRIS UCSM - $nombre
 
           1. Copie config.ini.example como config.ini (en esta misma carpeta) y complete
-             los datos de PostgreSQL y la seccion [orcid]. Con el .exe, deje
-             frontend_origin vacio y use redirect_uri = http://127.0.0.1:8000/api/auth/orcid/callback
+             los datos de PostgreSQL y la seccion [orcid]. Use
+             redirect_uri = http://127.0.0.1:8000/api/auth/orcid/callback
           2. Base nueva: ejecute base_datos_repositorio.sql en PostgreSQL 16.
              Base ya instalada: ejecute una vez migracion_scopus_opcional.sql.
           3. Abra PortalCRIS.exe. El navegador se abre en http://127.0.0.1:8000.
