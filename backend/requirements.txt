@@ -1,0 +1,7 @@
+# Controlador PostgreSQL, API HTTP, cliente ORCID y servidor ASGI.
+psycopg2-binary==2.9.10
+fastapi[standard]>=0.115,<1
+uvicorn[standard]>=0.34,<1
+httpx>=0.28,<1
+itsdangerous>=2.2,<3
+python-multipart>=0.0.20,<1

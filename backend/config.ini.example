@@ -1,0 +1,9 @@
+; Copiar este archivo como config.ini y completar los datos reales.
+; config.ini NO se sube a GitHub (contiene la contrasenia).
+[postgresql]
+host = localhost
+port = 5432
+dbname = bd_coordinador_repositorios
+user = postgres
+password = CAMBIAR_CLAVE
+connect_timeout = 5
