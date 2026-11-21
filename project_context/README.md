@@ -10,7 +10,7 @@ conservan el contexto académico e institucional que compartió el equipo.
 | Orden | Documento | Para qué sirve |
 |---|---|---|
 | 1 | [Guía de flujos operativos](guia-flujos-operativos-portal-cris.md) | Explica los roles, las pantallas, el recorrido de investigador/coordinador, las validaciones disponibles y qué integraciones siguen fuera de alcance. |
-| 2 | [Diseño técnico del esquema y migración](diseno-tecnico-esquema-y-migracion-cris.md) | Describe las 42 tablas, relaciones, procedimientos, reglas de integridad y los límites entre el esquema implementado y el diseño futuro. |
+| 2 | [Diseño técnico del esquema y migración](diseno-tecnico-esquema-y-migracion-cris.md) | Describe las 42 tablas (43 con `cuenta_administrador`), relaciones, procedimientos, reglas de integridad y los límites entre el esquema implementado y el diseño futuro. |
 | 3 | [Cambios del esquema y CSV Pure](registro-cambios-esquema-y-flujo-csv-pure.md) | Registra los cambios DDL, cómo se cura e importa el CSV y con qué criterios se consolidan automáticamente las publicaciones seguras. |
 | 4 | [Contexto del módulo del coordinador](contexto-modulo-coordinador-cris.md) | Documento de contexto recibido. Contiene requisitos y propuestas originales; puede describir ideas que no forman parte del portal actual. |
 | 5 | [Desarrollo de la base de datos](desarrollo_de_la_base_de_datos_repositorios_ucsm.md) | Documento académico original de modelado y PostgreSQL. Se conserva su nombre y contenido base; sus avisos iniciales apuntan a las actualizaciones técnicas. |
@@ -41,6 +41,16 @@ esquema, no los ejemplos o diagramas de los documentos de contexto.
   el perfil desde la instancia institucional.
 - Consulta el Histórico de publicaciones, importa y depura CSV de Pure y usa el
   dashboard/reportes disponibles.
+
+### Administrador (rol técnico)
+
+- No forma parte del flujo investigador/coordinador: es una cuenta de
+  mantenimiento. El panel `/admin` permite CRUD sobre cualquier tabla respetando
+  restricciones, claves foráneas y triggers; las contraseñas se muestran
+  enmascaradas y se guardan como hash. Su cuenta vive en `cuenta_administrador`
+  (tabla 43) y se crea con `crear_admin.py` o `PortalCRIS.exe --crear-admin`.
+- El rol de PostgreSQL `admin_cris` (`rol_admin_cris.sql`) da CRUD sobre los datos
+  sin permisos de DDL.
 
 ### Verificaciones externas
 

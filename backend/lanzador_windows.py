@@ -2,6 +2,7 @@
 
 Inicia el portal (FastAPI + frontend React ya compilado) y abre el navegador.
 config.ini se lee de la misma carpeta donde está el .exe.
+Con --crear-admin crea o actualiza la cuenta de administrador del portal.
 
 Generar el ejecutable (lo hace el workflow .github/workflows/release-windows.yml):
     pyinstaller --onefile --name PortalCRIS --paths . --collect-submodules uvicorn
@@ -17,6 +18,13 @@ import uvicorn
 
 
 def main():
+    if "--crear-admin" in sys.argv[1:]:
+        from backend.src.repositorios.administracion import crear_admin_interactivo
+        codigo = crear_admin_interactivo()
+        if getattr(sys, "frozen", False):
+            input("Presione Enter para cerrar...")
+        sys.exit(codigo)
+
     host = os.getenv("PORTAL_HOST", "127.0.0.1")
     port = int(os.getenv("PORTAL_PORT", "8000"))
     carpeta = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.getcwd()

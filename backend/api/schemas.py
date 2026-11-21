@@ -1,7 +1,7 @@
 """Esquemas HTTP y validaciones de los formularios del portal."""
 import re
 from datetime import date
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -14,7 +14,7 @@ class StrictModel(BaseModel):
 
 
 class LoginBody(StrictModel):
-    role: Literal["coordinator", "investigator"]
+    role: Literal["coordinator", "investigator", "admin"]
     email: str = Field(min_length=3, max_length=100)
     password: str = Field(min_length=1, max_length=200)
 
@@ -390,3 +390,16 @@ class PureBatchBody(StrictModel):
 
 class ReportGenerateBody(StrictModel):
     fecha: date
+
+
+class AdminRowBody(StrictModel):
+    valores: dict[str, Any]
+
+
+class AdminUpdateBody(StrictModel):
+    clave: dict[str, Any]
+    valores: dict[str, Any]
+
+
+class AdminKeyBody(StrictModel):
+    clave: dict[str, Any]

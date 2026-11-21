@@ -17,6 +17,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from ..src.db.conexion import ErrorConexion, carpeta_base
 from ..src.repositorios import (
+    administracion,
     coordinadores,
     historico,
     investigadores,
@@ -30,6 +31,9 @@ from ..src.repositorios.catalogos import ESCUELAS_UCSM, GENEROS, ODS
 from . import orcid
 from . import pure_csv
 from .schemas import (
+    AdminKeyBody,
+    AdminRowBody,
+    AdminUpdateBody,
     ApplicationBody,
     CandidateCurationBody,
     CandidateDecisionBody,
@@ -242,7 +246,10 @@ def auth_me(request: Request):
 
 @app.post("/api/auth/login", dependencies=[Depends(require_csrf)])
 def auth_login(body: LoginBody, request: Request):
-    if body.role == "coordinator":
+    if body.role == "admin":
+        admin = administracion.autenticar(body.email, body.password)
+        safe_user = {"role": "admin", "id": admin["id"], "nombre": admin["nombre"], "correo": admin["correo"]}
+    elif body.role == "coordinator":
         user = coordinadores.autenticar(body.email, body.password)
         safe_user = {
             "role": "coordinator",
@@ -398,19 +405,11 @@ def researcher_register(body: RegisterBody, request: Request):
             detail="Conecte su cuenta ORCID antes de enviar la postulación.",
         )
     solicitudes_investigador.registrar(payload, body.password)
-    user = solicitudes_investigador.autenticar(payload["correo"], body.password)
-    safe_user = {
-        "role": "investigator",
-        "id": user["id"],
-        "solicitud_id": user["solicitud_id"],
-        "codigo_ucsm": user["codigo_ucsm"],
-        "correo": user["correo_elec"],
-        "estado": user["estado"],
-    }
+    # El registro no inicia sesión: el frontend lleva al login del investigador
+    # con un mensaje de confirmación, para que quede claro que la cuenta existe.
     request.session.clear()
-    request.session["user"] = safe_user
     _csrf_token(request)
-    return {"user": safe_user, "csrf_token": request.session["csrf_token"]}
+    return {"ok": True, "correo": payload["correo"], "csrf_token": request.session["csrf_token"]}
 
 
 @app.get("/api/researcher/application")
@@ -882,6 +881,50 @@ def coordinator_decide_patent(
     patentes_cris.resolver(
         solicitud_id, current["codigo_ucsm"], body.resultado, body.motivo)
     return {"ok": True, "estado": body.resultado}
+
+
+# --- Panel de administrador: CRUD genérico sobre las tablas ------------------
+# Rol técnico de mantenimiento, fuera del flujo investigador/coordinador.
+
+@app.exception_handler(administracion.NoEncontrado)
+async def handle_not_found(_request, exc):
+    return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+
+@app.get("/api/admin/tables")
+def admin_tables(request: Request):
+    _user(request, "admin")
+    return administracion.listar_tablas()
+
+
+@app.get("/api/admin/tables/{tabla}/rows")
+def admin_rows(
+    tabla: str,
+    request: Request,
+    pagina: int = Query(default=1, ge=1),
+    tamano: int = Query(default=25, ge=1, le=administracion.TAMANO_MAXIMO),
+    buscar: str | None = Query(default=None, max_length=200),
+):
+    _user(request, "admin")
+    return administracion.listar_filas(tabla, pagina, tamano, buscar)
+
+
+@app.post("/api/admin/tables/{tabla}/rows", dependencies=[Depends(require_csrf)])
+def admin_create_row(tabla: str, body: AdminRowBody, request: Request):
+    _user(request, "admin")
+    return administracion.crear(tabla, body.valores)
+
+
+@app.put("/api/admin/tables/{tabla}/rows", dependencies=[Depends(require_csrf)])
+def admin_update_row(tabla: str, body: AdminUpdateBody, request: Request):
+    _user(request, "admin")
+    return administracion.actualizar(tabla, body.clave, body.valores)
+
+
+@app.delete("/api/admin/tables/{tabla}/rows", dependencies=[Depends(require_csrf)])
+def admin_delete_row(tabla: str, body: AdminKeyBody, request: Request):
+    _user(request, "admin")
+    return {"eliminadas": administracion.eliminar(tabla, body.clave)}
 
 
 @app.get("/")

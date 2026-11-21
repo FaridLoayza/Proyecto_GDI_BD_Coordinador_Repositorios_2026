@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import { BsAward, BsBoxArrowRight, BsBuildings, BsClockHistory, BsClipboard2Check, BsEye, BsEyeSlash, BsFileEarmarkBarGraph, BsHouseDoor, BsPeople, BsSearch } from 'react-icons/bs'
+import { BsAward, BsBoxArrowRight, BsBuildings, BsClockHistory, BsClipboard2Check, BsDatabase, BsEye, BsEyeSlash, BsFileEarmarkBarGraph, BsHouseDoor, BsPeople, BsSearch } from 'react-icons/bs'
 import { BrowserRouter, Link, NavLink, Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import './App.css'
 
@@ -82,10 +82,10 @@ function AuthProvider({ children }) {
   }, [csrf])
   const register = useCallback(async (body) => {
     const data = await sendRequest('/api/researcher/register', { method: 'POST', body, csrf })
-    setUser(data.user)
+    setUser(null)
     setCsrf(data.csrf_token)
     setAuthError('')
-    return data.user
+    return data
   }, [csrf])
   const signOut = useCallback(async () => {
     await sendRequest('/api/auth/logout', { method: 'POST', csrf })
@@ -99,6 +99,10 @@ function AuthProvider({ children }) {
   }), [user, csrf, loading, authError, request, signIn, register, signOut])
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+}
+
+function homeFor(role) {
+  return { coordinator: '/coordinator', admin: '/admin' }[role] || '/investigator'
 }
 
 function useAuth() {
@@ -128,7 +132,9 @@ function AppFrame({ children }) {
   async function logout() {
     try { await signOut(); navigate('/') } catch (error) { window.alert(error.message) }
   }
-  const links = user?.role === 'coordinator'
+  const links = user?.role === 'admin'
+    ? [['/admin', 'Datos (CRUD)', BsDatabase, true]]
+    : user?.role === 'coordinator'
     ? [
       ['/coordinator', 'Inicio', BsHouseDoor, true],
       ['/coordinator/applications', 'Bandeja de revisión', BsClipboard2Check],
@@ -145,7 +151,7 @@ function AppFrame({ children }) {
     <header className="topbar">
       {user ? (
         <div className="topbar-user">
-          <span><strong>{user.nombre || user.correo}</strong><small>{user.role === 'coordinator' ? 'Coordinador' : 'Investigador'}</small></span>
+          <span><strong>{user.nombre || user.correo}</strong><small>{{ coordinator: 'Coordinador', admin: 'Administrador' }[user.role] || 'Investigador'}</small></span>
           <button className="button button-outline button-compact" onClick={logout}><BsBoxArrowRight aria-hidden="true" />Cerrar sesión</button>
         </div>
       ) : <><Brand />{location.pathname !== '/' && <Link className="button button-outline" to="/">Inicio</Link>}</>}
@@ -156,7 +162,7 @@ function AppFrame({ children }) {
       <div className="app app-authenticated">
         <div className="app-shell">
           <aside className="sidebar">
-            <SidebarBrand to={user.role === 'coordinator' ? '/coordinator' : '/investigator'} />
+            <SidebarBrand to={homeFor(user.role)} />
             <nav className="sidebar-nav" aria-label="Menú principal">
               <p className="sidebar-label">MENÚ PRINCIPAL</p>
               {links.map(([href, label, Icon, exact]) => (
@@ -185,14 +191,14 @@ function RequireRole({ role }) {
   const { user, loading } = useAuth()
   if (loading) return <div className="loading">Cargando portal…</div>
   if (!user) return <Navigate to="/" replace />
-  if (user.role !== role) return <Navigate to={user.role === 'coordinator' ? '/coordinator' : '/investigator'} replace />
+  if (user.role !== role) return <Navigate to={homeFor(user.role)} replace />
   return <Outlet />
 }
 
 function Home() {
   const { user, loading } = useAuth()
   if (loading) return <div className="loading">Cargando portal…</div>
-  if (user) return <Navigate to={user.role === 'coordinator' ? '/coordinator' : '/investigator'} replace />
+  if (user) return <Navigate to={homeFor(user.role)} replace />
   return (
     <section className="home">
       <div className="hero">
@@ -214,33 +220,43 @@ function Home() {
         </article>
       </div>
       <p className="notice">Las verificaciones de ORCID aportan evidencia, pero no aprueban automáticamente una postulación ni confirman la afiliación institucional.</p>
+      <p className="small-muted admin-access-link"><Link className="text-link" to="/login/admin">Acceso de administrador</Link></p>
     </section>
   )
+}
+
+const LOGIN_TEXTS = {
+  coordinator: ['Gestión institucional', 'Acceso del coordinador', 'Use sus credenciales institucionales.'],
+  investigator: ['Acceso de investigador', 'Ingresa a tu cuenta', 'Consulta el estado de tu postulación o perfil.'],
+  admin: ['Mantenimiento técnico', 'Acceso de administrador', 'Administración de los datos del portal (CRUD).'],
 }
 
 function LoginPage() {
   const { role } = useParams()
   const { user, signIn } = useAuth()
   const navigate = useNavigate()
-  const [email, setEmail] = useState('')
+  const location = useLocation()
+  const registered = role === 'investigator' && location.state?.registered
+  const [email, setEmail] = useState(() => (registered && location.state?.email) || '')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
-  if (!['coordinator', 'investigator'].includes(role)) return <Navigate to="/" replace />
-  if (user) return <Navigate to={user.role === 'coordinator' ? '/coordinator' : '/investigator'} replace />
+  if (!LOGIN_TEXTS[role]) return <Navigate to="/" replace />
+  if (user) return <Navigate to={homeFor(user.role)} replace />
   async function submit(event) {
     event.preventDefault()
     setError(''); setBusy(true)
     try {
       const account = await signIn({ role, email, password })
-      navigate(account.role === 'coordinator' ? '/coordinator' : '/investigator')
+      navigate(homeFor(account.role))
     } catch (problem) { setError(problem.message) } finally { setBusy(false) }
   }
   return (
     <section className="panel auth-panel">
-      <p className="eyebrow">{role === 'coordinator' ? 'Gestión institucional' : 'Acceso de investigador'}</p>
-      <h1>{role === 'coordinator' ? 'Acceso del coordinador' : 'Ingresa a tu cuenta'}</h1>
-      <p className="muted">{role === 'coordinator' ? 'Use sus credenciales institucionales.' : 'Consulta el estado de tu postulación o perfil.'}</p>
+      <p className="eyebrow">{LOGIN_TEXTS[role][0]}</p>
+      <h1>{LOGIN_TEXTS[role][1]}</h1>
+      <p className="muted">{LOGIN_TEXTS[role][2]}</p>
+      {registered && <Alert kind="success">Tu cuenta fue creada y tu postulación quedó enviada al coordinador. Ya puedes iniciar sesión.</Alert>}
       {error && <Alert kind="error">{error}</Alert>}
       <form className="form-grid" onSubmit={submit}>
         <TextField label="Correo electrónico" name="email" type="email" value={email} onChange={setEmail} required autoComplete="username" />
@@ -470,12 +486,12 @@ function RegisterPage() {
   const navigate = useNavigate()
   const [password, setPassword] = useState('')
   const [confirmation, setConfirmation] = useState('')
-  if (user) return <Navigate to={user.role === 'coordinator' ? '/coordinator' : '/investigator'} replace />
+  if (user) return <Navigate to={homeFor(user.role)} replace />
   async function submit(application) {
     if (password.length < 12) throw new Error('La contraseña debe tener al menos 12 caracteres.')
     if (password !== confirmation) throw new Error('Las contraseñas no coinciden.')
-    await register({ application, password })
-    navigate('/investigator')
+    const result = await register({ application, password })
+    navigate('/login/investigator', { state: { registered: true, email: result.correo } })
   }
   return (
     <div className="page-stack">
@@ -1397,6 +1413,164 @@ function PatentReview() {
   </div>
 }
 
+// --- Panel de administrador: CRUD genérico sobre las tablas -----------------
+// Rol técnico de mantenimiento. Las columnas y tipos vienen del catálogo de
+// PostgreSQL; la base sigue aplicando restricciones, claves foráneas y triggers.
+const ADMIN_PAGE_SIZE = 25
+const ADMIN_MASK = '********'
+
+function adminCellText(value) {
+  if (value === null || value === undefined) return '—'
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
+}
+
+function adminInputValue(column, value) {
+  if (value === null || value === undefined) return ''
+  if (column.sensible) return ''
+  if (Array.isArray(value) && column.tipo.endsWith('[]')) {
+    return `{${value.map((item) => `"${String(item).replace(/["\\]/g, '\\$&')}"`).join(',')}}`
+  }
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
+}
+
+function AdminField({ column, value, onChange, isNew }) {
+  const disabled = column.solo_lectura || (!isNew && column.clave_primaria)
+  const label = <span>{column.nombre}{!column.nullable && !column.por_defecto && !column.solo_lectura && <b className="required"> *</b>} <small className="small-muted">{column.tipo}</small></span>
+  if (column.tipo === 'boolean') {
+    return <label className="field">{label}<select value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)}><option value="">(vacío)</option><option value="true">true</option><option value="false">false</option></select></label>
+  }
+  if (column.tipo === 'json' || column.tipo === 'jsonb' || /character varying\((1\d{3,}|[2-9]\d{3,})\)|text/.test(column.tipo)) {
+    return <label className="field field-span">{label}<textarea rows={3} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} /></label>
+  }
+  const type = column.sensible ? 'password' : column.tipo === 'date' ? 'date' : 'text'
+  const placeholder = column.sensible ? (isNew ? 'Contraseña (se guarda como hash)' : 'Dejar vacío para no cambiar') : column.solo_lectura ? 'Automático' : ''
+  return <label className="field">{label}<input type={type} value={value} disabled={disabled} placeholder={placeholder} autoComplete="new-password" onChange={(event) => onChange(event.target.value)} /></label>
+}
+
+function AdminRowForm({ data, row, onCancel, onSaved }) {
+  const { request } = useAuth()
+  const isNew = row === null
+  const initial = useMemo(() => Object.fromEntries(data.columnas.map((column) => [column.nombre, isNew ? '' : adminInputValue(column, row[column.nombre])])), [data, row, isNew])
+  const [values, setValues] = useState(initial)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  async function submit(event) {
+    event.preventDefault(); setBusy(true); setError('')
+    try {
+      const changed = Object.fromEntries(data.columnas
+        .filter((column) => !column.solo_lectura && values[column.nombre] !== initial[column.nombre])
+        .map((column) => [column.nombre, values[column.nombre]]))
+      if (isNew) {
+        await request(`/api/admin/tables/${data.tabla}/rows`, { method: 'POST', body: { valores: changed } })
+      } else {
+        const clave = Object.fromEntries(data.clave_primaria.map((name) => [name, row[name]]))
+        await request(`/api/admin/tables/${data.tabla}/rows`, { method: 'PUT', body: { clave, valores: changed } })
+      }
+      onSaved(isNew ? 'Registro creado.' : 'Registro actualizado.')
+    } catch (problem) { setError(problem.message) } finally { setBusy(false) }
+  }
+  return (
+    <form className="panel form-grid" onSubmit={submit}>
+      <h2 className="form-section-title">{isNew ? `Nuevo registro en ${data.tabla}` : `Editar registro de ${data.tabla}`}</h2>
+      {error && <Alert kind="error">{error}</Alert>}
+      {data.columnas.map((column) => <AdminField key={column.nombre} column={column} isNew={isNew} value={values[column.nombre]} onChange={(value) => setValues((current) => ({ ...current, [column.nombre]: value }))} />)}
+      <p className="small-muted field-span">Un campo vacío se guarda como nulo. Las restricciones, claves foráneas y triggers de la base se siguen aplicando.</p>
+      <div className="form-actions field-span"><button className="button button-primary" disabled={busy}>{busy ? 'Guardando…' : 'Guardar'}</button><button type="button" className="button button-quiet" onClick={onCancel}>Cancelar</button></div>
+    </form>
+  )
+}
+
+function AdminPanel() {
+  const { request, csrf } = useAuth()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const table = searchParams.get('tabla') || ''
+  const page = Number(searchParams.get('pagina') || 1)
+  const search = searchParams.get('buscar') || ''
+  const [tables, setTables] = useState([])
+  const [tableFilter, setTableFilter] = useState('')
+  const [data, setData] = useState(null)
+  const [searchText, setSearchText] = useState(search)
+  const [editing, setEditing] = useState(undefined)
+  const [message, setMessage] = useState('')
+  const [error, setError] = useState('')
+
+  useEffect(() => { request('/api/admin/tables').then(setTables).catch((problem) => setError(problem.message)) }, [request])
+  const loadRows = useCallback(async () => {
+    if (!table) { setData(null); return }
+    const query = new URLSearchParams({ pagina: String(page), tamano: String(ADMIN_PAGE_SIZE) })
+    if (search) query.set('buscar', search)
+    try { setData(await request(`/api/admin/tables/${encodeURIComponent(table)}/rows?${query}`)); setError('') } catch (problem) { setData(null); setError(problem.message) }
+  }, [request, table, page, search])
+  useEffect(() => { loadRows() }, [loadRows])
+
+  function go(changes) {
+    const next = new URLSearchParams(searchParams)
+    Object.entries(changes).forEach(([key, value]) => (value ? next.set(key, value) : next.delete(key)))
+    setSearchParams(next)
+    setEditing(undefined); setMessage('')
+  }
+  async function remove(row) {
+    const clave = Object.fromEntries(data.clave_primaria.map((name) => [name, row[name]]))
+    const label = Object.entries(clave).map(([key, value]) => `${key}=${value}`).join(', ')
+    if (!window.confirm(`¿Eliminar el registro ${label} de ${data.tabla}? Esta acción no se puede deshacer.`)) return
+    try {
+      await sendRequest(`/api/admin/tables/${data.tabla}/rows`, { method: 'DELETE', body: { clave }, csrf })
+      setMessage(`Registro ${label} eliminado.`); setError('')
+      await loadRows()
+    } catch (problem) { setError(problem.message); setMessage('') }
+  }
+
+  const totalPages = data ? Math.max(1, Math.ceil(data.total / data.tamano)) : 1
+  const visibleTables = tables.filter((item) => item.nombre.includes(tableFilter.trim().toLowerCase()))
+  const editable = data && data.clave_primaria.length > 0
+  return (
+    <div className="page-stack">
+      <div className="page-heading"><p className="eyebrow">Administrador</p><h1>Datos del portal</h1><p>Consulta, crea, edita y elimina registros de cualquier tabla. Úselo solo para mantenimiento.</p></div>
+      <div className="admin-layout">
+        <aside className="panel admin-tables">
+          <label className="field"><span>Tablas ({tables.length})</span><input value={tableFilter} placeholder="Filtrar…" onChange={(event) => setTableFilter(event.target.value)} /></label>
+          <nav>{visibleTables.map((item) => <button key={item.nombre} type="button" className={`admin-table-link${item.nombre === table ? ' active' : ''}`} onClick={() => { setSearchText(''); go({ tabla: item.nombre, pagina: '', buscar: '' }) }}>{item.nombre}</button>)}</nav>
+        </aside>
+        <section className="admin-content">
+          {error && <Alert kind="error">{error}</Alert>}
+          {message && <Alert kind="success">{message}</Alert>}
+          {!table && <div className="panel empty-state">Seleccione una tabla para ver sus registros.</div>}
+          {editing !== undefined && data && <AdminRowForm key={editing === null ? 'nuevo' : JSON.stringify(data.clave_primaria.map((name) => editing[name]))} data={data} row={editing} onCancel={() => setEditing(undefined)} onSaved={async (text) => { setEditing(undefined); setMessage(text); setError(''); await loadRows() }} />}
+          {data && (
+            <div className="panel">
+              <div className="section-title-row">
+                <h2>{data.tabla} <small className="small-muted">{data.total} registro(s)</small></h2>
+                <button type="button" className="button button-primary" onClick={() => { setEditing(null); setMessage('') }}>Nuevo registro</button>
+              </div>
+              <form className="admin-search" onSubmit={(event) => { event.preventDefault(); go({ buscar: searchText.trim(), pagina: '' }) }}>
+                <input value={searchText} placeholder="Buscar en cualquier columna…" onChange={(event) => setSearchText(event.target.value)} />
+                <button className="button button-outline button-compact">Buscar</button>
+                {search && <button type="button" className="button button-quiet button-compact" onClick={() => { setSearchText(''); go({ buscar: '', pagina: '' }) }}>Limpiar</button>}
+              </form>
+              {!editable && <p className="notice">Esta tabla no tiene clave primaria: solo se puede consultar y agregar registros.</p>}
+              <div className="table-scroll"><table>
+                <thead><tr>{editable && <th>Acciones</th>}{data.columnas.map((column) => <th key={column.nombre}>{column.nombre}{column.clave_primaria ? ' 🔑' : ''}</th>)}</tr></thead>
+                <tbody>{data.filas.map((row, index) => <tr key={editable ? data.clave_primaria.map((name) => row[name]).join('|') : index}>
+                  {editable && <td className="admin-actions"><button type="button" className="button button-outline button-compact" onClick={() => { setEditing(row); setMessage(''); window.scrollTo({ top: 0, behavior: 'smooth' }) }}>Editar</button><button type="button" className="button button-danger button-compact" onClick={() => remove(row)}>Eliminar</button></td>}
+                  {data.columnas.map((column) => <td key={column.nombre} title={adminCellText(row[column.nombre])}>{row[column.nombre] === ADMIN_MASK ? ADMIN_MASK : adminCellText(row[column.nombre]).slice(0, 80)}</td>)}
+                </tr>)}</tbody>
+              </table></div>
+              {!data.filas.length && <div className="empty-state">No hay registros{search ? ' que coincidan con la búsqueda' : ''}.</div>}
+              <div className="admin-pagination">
+                <button type="button" className="button button-outline button-compact" disabled={page <= 1} onClick={() => go({ pagina: String(page - 1) })}>Anterior</button>
+                <span>Página {page} de {totalPages}</span>
+                <button type="button" className="button button-outline button-compact" disabled={page >= totalPages} onClick={() => go({ pagina: String(page + 1) })}>Siguiente</button>
+              </div>
+            </div>
+          )}
+        </section>
+      </div>
+    </div>
+  )
+}
+
 function RouterApp() {
   return <AuthProvider><BrowserRouter><AppFrame><Routes>
     <Route path="/" element={<Home />} />
@@ -1415,6 +1589,9 @@ function RouterApp() {
       <Route path="/coordinator/reports" element={<CoordinatorReports />} />
       <Route path="/coordinator/applications/:id" element={<ApplicationReview />} />
       <Route path="/coordinator/patents/:id" element={<PatentReview />} />
+    </Route>
+    <Route element={<RequireRole role="admin" />}>
+      <Route path="/admin" element={<AdminPanel />} />
     </Route>
     <Route path="*" element={<Navigate to="/" replace />} />
   </Routes></AppFrame></BrowserRouter></AuthProvider>
