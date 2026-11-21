@@ -124,6 +124,9 @@
 .alert { padding: 12px 14px; border: 1px solid transparent; border-radius: 7px; font-size: 12px; line-height: 1.55; }
 .alert-error { border-color: #efc3bf; background: #fff3f1; color: #86271f; }
 .alert-warning { border-color: #eddcae; background: #fff9e9; color: #72540b; }
+.alert-success { border-color: #b9dfc4; background: #f0faf3; color: #1d5c31; }
+.orcid-connect p { margin: 0.25rem 0 0.5rem; }
+.orcid-connect .actions { margin-bottom: 0.75rem; }
 .alert-info { border-color: #c6d9cd; background: #edf5f0; color: var(--brand); }
 .status-heading, .section-title-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 15px; }
 .status-heading h2 { margin: 0; }

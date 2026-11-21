@@ -44,10 +44,17 @@ esquema, no los ejemplos o diagramas de los documentos de contexto.
 
 ### Verificaciones externas
 
-- **ORCID:** el backend puede consultar la existencia del identificador desde una
-  solicitud pendiente cuando están configuradas `ORCID_CLIENT_ID` y
-  `ORCID_CLIENT_SECRET`. Sin ellas, el resultado es `no_disponible`. La consulta no
+- **ORCID (login):** el investigador conecta su cuenta con el botón "Conectar con
+  ORCID" (OAuth, scope `/authenticate`). ORCID devuelve el identificador de quien
+  inició sesión, lo que prueba que le pertenece; el backend ignora el ORCID escrito en
+  el formulario. Requiere la sección `[orcid]` de `config.ini` o variables `ORCID_*`.
+  El estado del login vive en la sesión del servidor (sin tablas nuevas).
+- **ORCID (coordinador):** el botón "Consultar API pública" sigue comprobando solo la
+  existencia del registro; sin credenciales el resultado es `no_disponible`. No
   verifica afiliación UCSM ni aprueba al investigador.
+- **Scopus (autocompletado):** tras el login ORCID se leen los identificadores
+  externos públicos del ORCID; si aparece un "Scopus Author ID" se completa. Si no, el
+  campo queda vacío (es opcional desde `migracion_scopus_opcional.sql`).
 - **Scopus:** no hay integración de API; el coordinador puede registrar una
   verificación manual.
 - **Pure:** no hay integración de API. El perfil y su ID se gestionan manualmente.

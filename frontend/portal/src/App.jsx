@@ -292,13 +292,108 @@ function Alert({ kind = 'info', children }) {
   return <div className={`alert alert-${kind}`} role={kind === 'error' ? 'alert' : 'status'}>{children}</div>
 }
 
+// Borrador del formulario guardado antes de salir a orcid.org, para no perder
+// lo ya escrito al volver. Las contraseñas nunca se guardan aquí.
+const ORCID_DRAFT_KEY = 'cris_form_borrador'
+
+function readDraft(mode) {
+  try {
+    const draft = JSON.parse(window.sessionStorage.getItem(ORCID_DRAFT_KEY) || 'null')
+    return draft && draft.mode === mode ? draft.form : null
+  } catch { return null }
+}
+
+function saveDraft(mode, form) {
+  try { window.sessionStorage.setItem(ORCID_DRAFT_KEY, JSON.stringify({ mode, form })) } catch { /* sin almacenamiento: se pierde el borrador */ }
+}
+
+function clearDraft() {
+  try { window.sessionStorage.removeItem(ORCID_DRAFT_KEY) } catch { /* nada que limpiar */ }
+}
+
+const ORCID_RETURN_MESSAGES = {
+  ok: ['success', 'Cuenta ORCID conectada correctamente.'],
+  cancelado: ['warning', 'Cancelaste la conexión con ORCID. Puedes intentarlo de nuevo.'],
+  error: ['error', 'No se pudo conectar con ORCID. Intenta nuevamente.'],
+}
+
+function OrcidConnectField({ form, update, isCorrection }) {
+  const { request, csrf } = useAuth()
+  const [status, setStatus] = useState(null)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [returnMessage] = useState(() => ORCID_RETURN_MESSAGES[searchParams.get('orcid')] || null)
+  const mode = isCorrection ? 'investigator' : 'register'
+
+  useEffect(() => {
+    if (searchParams.has('orcid')) {
+      const next = new URLSearchParams(searchParams)
+      next.delete('orcid')
+      setSearchParams(next, { replace: true })
+    }
+  }, [searchParams, setSearchParams])
+
+  useEffect(() => {
+    let active = true
+    request('/api/auth/orcid/status').then((data) => {
+      if (!active) return
+      setStatus(data)
+      // Solo el ORCID verificado en el servidor reemplaza al del formulario.
+      if (data.orcid) {
+        update('orcid', data.orcid)
+        update('scopus_id', data.scopus_id ? String(data.scopus_id) : '')
+      }
+    }).catch(() => active && setStatus({ configurado: false, orcid: null }))
+    return () => { active = false }
+  }, [request, update])
+
+  function connect() {
+    const draft = { ...form }
+    delete draft.orcid
+    delete draft.scopus_id
+    saveDraft(mode, draft)
+    window.location.assign(`/api/auth/orcid/login?next=${mode}`)
+  }
+
+  async function disconnect() {
+    await sendRequest('/api/auth/orcid/disconnect', { method: 'POST', csrf })
+    setStatus((current) => ({ ...current, orcid: null, nombre: null, scopus_id: null }))
+    if (!isCorrection) { update('orcid', ''); update('scopus_id', '') }
+  }
+
+  const verified = Boolean(status?.orcid)
+  const shownOrcid = verified ? status.orcid : (isCorrection ? form.orcid : '')
+  return (
+    <div className="field field-span orcid-connect">
+      <span>ORCID<b className="required"> *</b></span>
+      {returnMessage && <Alert kind={returnMessage[0]}>{returnMessage[1]}</Alert>}
+      {status && !status.configurado && <Alert kind="warning">El inicio de sesión con ORCID no está configurado en el servidor. Avise al coordinador.</Alert>}
+      {shownOrcid ? (
+        <p>
+          <a href={`https://orcid.org/${shownOrcid}`} target="_blank" rel="noreferrer">{shownOrcid}</a>
+          {verified && status.nombre && <> · {status.nombre}</>}
+          {' '}<span className="small-muted">{verified ? 'Verificado con inicio de sesión en ORCID.' : 'Verificado al registrar la postulación.'}</span>
+        </p>
+      ) : <p className="muted">Inicia sesión en ORCID para comprobar que el identificador te pertenece.</p>}
+      <div className="actions">
+        <button type="button" className={`button ${shownOrcid ? 'button-outline' : 'button-primary'}`} disabled={!status?.configurado} onClick={connect}>
+          {shownOrcid ? 'Conectar otra cuenta ORCID' : 'Conectar con ORCID'}
+        </button>
+        {verified && <button type="button" className="button button-quiet" onClick={disconnect}>Desconectar</button>}
+      </div>
+      <span>Scopus Author ID</span>
+      <p>{form.scopus_id ? <a href={`https://www.scopus.com/authid/detail.uri?authorId=${form.scopus_id}`} target="_blank" rel="noreferrer">{form.scopus_id}</a> : <span className="muted">No encontrado en ORCID. Es opcional: el coordinador puede verificarlo manualmente.</span>}</p>
+      <small>Se completa automáticamente si tu perfil de Scopus está vinculado a tu ORCID.</small>
+    </div>
+  )
+}
+
 function ApplicationForm({ initial = EMPTY_APPLICATION, onSubmit, isCorrection = false, submitLabel, children }) {
   const { request } = useAuth()
-  const [form, setForm] = useState(() => ({ ...EMPTY_APPLICATION, ...initial }))
+  const [form, setForm] = useState(() => ({ ...EMPTY_APPLICATION, ...initial, ...(readDraft(isCorrection ? 'investigator' : 'register') || {}) }))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [uploading, setUploading] = useState(false)
-  const update = (key, value) => setForm((current) => ({ ...current, [key]: value }))
+  const update = useCallback((key, value) => setForm((current) => ({ ...current, [key]: value })), [])
   async function uploadPhoto(file) {
     if (!file) return
     if (file.size > FOTO_MAX_BYTES) { setError('La foto no puede superar los 2 MB.'); return }
@@ -311,12 +406,16 @@ function ApplicationForm({ initial = EMPTY_APPLICATION, onSubmit, isCorrection =
     } catch (problem) { setError(problem.message) } finally { setUploading(false) }
   }
   async function submit(event) {
-    event.preventDefault(); setError(''); setBusy(true)
+    event.preventDefault(); setError('')
+    if (!form.orcid) { setError('Conecta tu cuenta ORCID antes de enviar la postulación.'); return }
+    setBusy(true)
     try {
       await onSubmit({
-        ...form, codigo_ucsm: Number(form.codigo_ucsm), celular: String(form.celular), scopus_id: Number(form.scopus_id),
+        ...form, codigo_ucsm: Number(form.codigo_ucsm), celular: String(form.celular),
+        scopus_id: form.scopus_id ? Number(form.scopus_id) : null,
         intereses: Array.isArray(form.intereses) ? form.intereses : form.intereses.split(/[,\n;]/).map((value) => value.trim()).filter(Boolean),
       })
+      clearDraft()
     } catch (problem) { setError(problem.message) } finally { setBusy(false) }
   }
   return (
@@ -340,8 +439,7 @@ function ApplicationForm({ initial = EMPTY_APPLICATION, onSubmit, isCorrection =
       </label>
       <TextField label="Celular" name="celular" type="tel" value={form.celular} onChange={(v) => update('celular', v.replace(/\D/g, ''))} required maxLength={9} help="Nueve dígitos, comienza con 9." />
       <h2 className="form-section-title">Información académica</h2>
-      <TextField label="ORCID" name="orcid" value={form.orcid} onChange={(v) => update('orcid', v)} required help="Formato 0000-0000-0000-0000." />
-      <TextField label="Scopus Author ID" name="scopus_id" inputMode="numeric" value={form.scopus_id} onChange={(v) => update('scopus_id', v.replace(/\D/g, ''))} required />
+      <OrcidConnectField form={form} update={update} isCorrection={isCorrection} />
       <TextField label="Enlace CTI Vitae" name="link_cti" type="url" value={form.link_cti} onChange={(v) => update('link_cti', v)} required />
       <label className="field">
         <span>Foto de perfil (.jpg/.png, máx. 2 MB)<b className="required"> *</b></span>
@@ -528,7 +626,7 @@ function CoordinatorInvestigators() {
           ['DNI', detail.dni], ['Escuela profesional', detail.escuela], ['Correo', detail.correo], ['Celular', detail.celular],
           ['Género', detail.genero], ['Fecha de nacimiento', String(detail.fecha_nacimiento || '').slice(0, 10)],
           ['ORCID', <a key="orcid-link" href={`https://orcid.org/${detail.orcid}`} target="_blank" rel="noreferrer">{detail.orcid}</a>],
-          ['Scopus Author ID', detail.scopus_id], ['CTI Vitae', <a key="cti-link" href={detail.link_cti} target="_blank" rel="noreferrer">{detail.link_cti}</a>],
+          ['Scopus Author ID', detail.scopus_id || 'No registrado'], ['CTI Vitae', <a key="cti-link" href={detail.link_cti} target="_blank" rel="noreferrer">{detail.link_cti}</a>],
           ['Estado en Pure', detail.pure_estado === 'registrado_manual' ? `Registrado · ${detail.pure_person_id}` : 'Pendiente de registro manual'],
           ['ODS', detail.ods?.join(', ') || '—'], ['Intereses', detail.intereses || '—'], ['Resumen', detail.resumen || '—'],
         ].map(([label, value]) => <div className="detail-pair" key={label}><dt>{label}</dt><dd>{value || '—'}</dd></div>)}
@@ -1234,7 +1332,7 @@ function ApplicationReview() {
     {error && <Alert kind="error">{error}</Alert>}
     <section className="panel"><h2>Datos declarados</h2><dl className="details-grid">{Object.entries({
       DNI: form.dni, Correo: form.correo, Género: form.genero, 'Fecha de nacimiento': form.fecha_nacimiento,
-      Escuela: form.escuela, Celular: form.celular, ORCID: form.orcid, 'Scopus ID': form.scopus_id,
+      Escuela: form.escuela, Celular: form.celular, ORCID: form.orcid, 'Scopus ID': form.scopus_id || 'No registrado',
       'CTI Vitae': form.link_cti, 'Referencia de foto': form.foto, 'Resumen académico': form.resumen,
       ODS: form.ods.join(', '), 'Intereses de investigación': form.intereses.join(', '),
     }).map(([label, value]) => <div className="detail-pair" key={label}><dt>{label}</dt><dd>{value || '—'}</dd></div>)}</dl></section>

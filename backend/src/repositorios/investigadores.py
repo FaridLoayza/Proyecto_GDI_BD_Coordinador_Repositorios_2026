@@ -80,7 +80,7 @@ def _datos_comunes(d):
         celular=u.entero(d.get("celular"), "El celular"),
         correo=u.obligatorio(d.get("correo"), "El correo"),
         orcid=u.obligatorio(d.get("orcid"), "El ORCID"),
-        scopus=u.entero(d.get("scopus_id"), "El Scopus ID"),
+        scopus=u.entero_opcional(d.get("scopus_id"), "El Scopus ID"),
         link=u.obligatorio(d.get("link_cti"), "El enlace CTI Vitae"),
         resumen=u.obligatorio(d.get("resumen"), "El resumen academico"),
         foto=u.obligatorio(d.get("foto"), "La foto de perfil"),

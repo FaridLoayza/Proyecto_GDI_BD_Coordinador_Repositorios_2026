@@ -329,9 +329,23 @@ class PortalApiTests(unittest.TestCase):
         register.assert_not_called()
 
 
+SIN_CONFIG_INI = os.path.join(ROOT, "backend", "no-existe-config-pruebas.ini")
+ORCID_ENV_SANDBOX = {
+    "ORCID_CLIENT_ID": "APP-TEST",
+    "ORCID_CLIENT_SECRET": "secreto-de-prueba",
+    "ORCID_ENVIRONMENT": "sandbox",
+    "ORCID_REDIRECT_URI": "http://127.0.0.1:8000/api/auth/orcid/callback",
+    "ORCID_FRONTEND_ORIGIN": "http://127.0.0.1:5173",
+}
+
+
 class OrcidTests(unittest.TestCase):
     def setUp(self):
         orcid._TOKEN_CACHE.clear()
+        # Aísla las pruebas del config.ini local de quien las ejecuta.
+        config_patch = patch.object(orcid, "_CONFIG_PATH", SIN_CONFIG_INI)
+        config_patch.start()
+        self.addCleanup(config_patch.stop)
 
     def test_checksum_accepts_known_valid_orcid(self):
         self.assertTrue(orcid.checksum_valido(VALID_ORCID))
@@ -382,6 +396,295 @@ class OrcidTests(unittest.TestCase):
                 )):
             result = orcid.verificar(VALID_ORCID)
         self.assertEqual(result[0], "no_confirmado")
+
+
+def solicitud_valida(**cambios):
+    datos = {
+        "dni": "12345678",
+        "codigo_ucsm": 2099000001,
+        "correo": "ana@example.test",
+        "nombres": "Ana",
+        "apellido_paterno": "Prueba",
+        "apellido_materno": "Portal",
+        "genero": "Femenino",
+        "fecha_nacimiento": "1990-01-01",
+        "escuela": "Ingeniería de Sistemas",
+        "celular": "987654321",
+        "orcid": VALID_ORCID,
+        "scopus_id": None,
+        "link_cti": "https://example.test/cti",
+        "resumen": "Perfil de prueba",
+        "foto": "ana.png",
+        "ods": ["ODS 1: Fin de la pobreza"],
+        "intereses": ["Investigación"],
+    }
+    datos.update(cambios)
+    return datos
+
+
+CUENTA_PRUEBA = {"id": 1, "solicitud_id": 2, "codigo_ucsm": 2099000001,
+                 "correo_elec": "ana@example.test", "estado": "pendiente_revision"}
+
+
+class OrcidLoginApiTests(unittest.TestCase):
+    """Flujo OAuth en la API: el ORCID sale de la sesión, nunca del formulario."""
+
+    OTRO_ORCID = "0000-0001-5109-3700"
+
+    def setUp(self):
+        config_patch = patch.object(orcid, "_CONFIG_PATH", SIN_CONFIG_INI)
+        config_patch.start()
+        self.addCleanup(config_patch.stop)
+        env_patch = patch.dict(os.environ, ORCID_ENV_SANDBOX)
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+        self.client = TestClient(app, follow_redirects=False)
+        self.csrf = self.client.get("/api/auth/me").json()["csrf_token"]
+
+    def connect_orcid(self, orcid_id=VALID_ORCID, scopus_id=57193456789):
+        login = self.client.get("/api/auth/orcid/login?next=register")
+        self.assertEqual(login.status_code, 307)
+        state = httpx.URL(login.headers["location"]).params["state"]
+        with patch("backend.api.app.orcid.intercambiar_codigo",
+                   return_value={"orcid": orcid_id, "nombre": "Ana Prueba"}), \
+                patch("backend.api.app.orcid.buscar_scopus_id", return_value=scopus_id):
+            return self.client.get(f"/api/auth/orcid/callback?code=abc&state={state}")
+
+    def status(self):
+        return self.client.get("/api/auth/orcid/status").json()
+
+    def register(self, application):
+        return self.client.post(
+            "/api/researcher/register",
+            json={"application": application, "password": "secure-password-123"},
+            headers={"X-CSRF-Token": self.csrf},
+        )
+
+    def test_login_redirects_to_orcid_authorize_page(self):
+        response = self.client.get("/api/auth/orcid/login?next=register")
+        self.assertEqual(response.status_code, 307)
+        self.assertTrue(response.headers["location"].startswith(
+            "https://sandbox.orcid.org/oauth/authorize?"))
+
+    def test_login_without_configuration_returns_clear_error(self):
+        with patch.dict(os.environ, {"ORCID_CLIENT_ID": "", "ORCID_CLIENT_SECRET": ""}):
+            response = self.client.get("/api/auth/orcid/login")
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("ORCID", response.json()["detail"])
+
+    def test_callback_stores_verified_orcid_and_scopus_in_session(self):
+        callback = self.connect_orcid()
+        self.assertEqual(callback.status_code, 307)
+        self.assertEqual(callback.headers["location"], "http://127.0.0.1:5173/register?orcid=ok")
+        status = self.status()
+        self.assertEqual(status["orcid"], VALID_ORCID)
+        self.assertEqual(status["scopus_id"], 57193456789)
+        self.assertTrue(status["configurado"])
+
+    def test_callback_with_wrong_state_does_not_store_orcid(self):
+        self.client.get("/api/auth/orcid/login?next=register")
+        with patch("backend.api.app.orcid.intercambiar_codigo") as exchange:
+            callback = self.client.get("/api/auth/orcid/callback?code=abc&state=falso")
+        exchange.assert_not_called()
+        self.assertEqual(callback.headers["location"], "http://127.0.0.1:5173/register?orcid=error")
+        self.assertIsNone(self.status()["orcid"])
+
+    def test_state_cannot_be_reused(self):
+        login = self.client.get("/api/auth/orcid/login?next=register")
+        state = httpx.URL(login.headers["location"]).params["state"]
+        with patch("backend.api.app.orcid.intercambiar_codigo",
+                   return_value={"orcid": VALID_ORCID, "nombre": None}), \
+                patch("backend.api.app.orcid.buscar_scopus_id", return_value=None):
+            self.client.get(f"/api/auth/orcid/callback?code=abc&state={state}")
+            self.client.post("/api/auth/orcid/disconnect", headers={"X-CSRF-Token": self.csrf})
+            again = self.client.get(f"/api/auth/orcid/callback?code=abc&state={state}")
+        self.assertTrue(again.headers["location"].endswith("orcid=error"))
+        self.assertIsNone(self.status()["orcid"])
+
+    def test_user_cancelling_in_orcid_returns_to_form_with_cancel_flag(self):
+        login = self.client.get("/api/auth/orcid/login?next=register")
+        state = httpx.URL(login.headers["location"]).params["state"]
+        callback = self.client.get(f"/api/auth/orcid/callback?error=access_denied&state={state}")
+        self.assertEqual(callback.headers["location"], "http://127.0.0.1:5173/register?orcid=cancelado")
+
+    def test_failed_code_exchange_redirects_with_error(self):
+        login = self.client.get("/api/auth/orcid/login?next=register")
+        state = httpx.URL(login.headers["location"]).params["state"]
+        with patch("backend.api.app.orcid.intercambiar_codigo",
+                   side_effect=orcid.ErrorOrcid("fallo")):
+            callback = self.client.get(f"/api/auth/orcid/callback?code=abc&state={state}")
+        self.assertTrue(callback.headers["location"].endswith("orcid=error"))
+        self.assertIsNone(self.status()["orcid"])
+
+    def test_disconnect_clears_verified_orcid(self):
+        self.connect_orcid()
+        response = self.client.post("/api/auth/orcid/disconnect", headers={"X-CSRF-Token": self.csrf})
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(self.status()["orcid"])
+
+    def test_registration_without_verified_orcid_is_rejected(self):
+        with patch("backend.api.app.solicitudes_investigador.registrar") as registrar:
+            response = self.register(solicitud_valida())
+        self.assertEqual(response.status_code, 409)
+        registrar.assert_not_called()
+
+    def test_registration_uses_session_orcid_and_scopus_not_client_values(self):
+        self.connect_orcid()
+        with patch("backend.api.app.solicitudes_investigador.registrar") as registrar, \
+                patch("backend.api.app.solicitudes_investigador.autenticar", return_value=CUENTA_PRUEBA):
+            response = self.register(solicitud_valida(orcid=self.OTRO_ORCID, scopus_id=111))
+        self.assertEqual(response.status_code, 200)
+        payload = registrar.call_args.args[0]
+        self.assertEqual(payload["orcid"], VALID_ORCID)
+        self.assertEqual(payload["scopus_id"], "57193456789")
+        self.assertIsNone(self.status()["orcid"])
+
+    def test_registration_without_scopus_in_orcid_sends_null(self):
+        self.connect_orcid(scopus_id=None)
+        with patch("backend.api.app.solicitudes_investigador.registrar") as registrar, \
+                patch("backend.api.app.solicitudes_investigador.autenticar", return_value=CUENTA_PRUEBA):
+            response = self.register(solicitud_valida(scopus_id=999))
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(registrar.call_args.args[0]["scopus_id"])
+
+    def login_investigator(self):
+        cuenta = {**CUENTA_PRUEBA, "estado": "observada"}
+        with patch("backend.api.app.solicitudes_investigador.autenticar", return_value=cuenta):
+            login = self.client.post(
+                "/api/auth/login",
+                json={"role": "investigator", "email": "ana@example.test", "password": "x"},
+                headers={"X-CSRF-Token": self.csrf},
+            )
+        self.csrf = login.json()["csrf_token"]
+
+    def correct(self, application, stored):
+        with patch("backend.api.app.solicitudes_investigador.obtener_por_cuenta", return_value=stored), \
+                patch("backend.api.app.solicitudes_investigador.actualizar") as actualizar:
+            response = self.client.put(
+                "/api/researcher/application", json=application,
+                headers={"X-CSRF-Token": self.csrf},
+            )
+        return response, actualizar
+
+    def test_correction_without_reconnecting_keeps_stored_orcid(self):
+        self.login_investigator()
+        stored = {"id": 2, "estado": "observada", "codigo_orcid": VALID_ORCID, "scopus_id": 222}
+        response, actualizar = self.correct(
+            solicitud_valida(orcid=self.OTRO_ORCID, scopus_id=999), stored)
+        self.assertEqual(response.status_code, 200)
+        payload = actualizar.call_args.args[1]
+        self.assertEqual(payload["orcid"], VALID_ORCID)
+        self.assertEqual(payload["scopus_id"], "222")
+
+    def test_correction_after_reconnecting_uses_new_orcid(self):
+        self.login_investigator()
+        self.connect_orcid(orcid_id=self.OTRO_ORCID, scopus_id=None)
+        stored = {"id": 2, "estado": "observada", "codigo_orcid": VALID_ORCID, "scopus_id": 222}
+        response, actualizar = self.correct(solicitud_valida(), stored)
+        self.assertEqual(response.status_code, 200)
+        payload = actualizar.call_args.args[1]
+        self.assertEqual(payload["orcid"], self.OTRO_ORCID)
+        self.assertIsNone(payload["scopus_id"])
+
+
+class OrcidOAuthTests(unittest.TestCase):
+    def setUp(self):
+        orcid._TOKEN_CACHE.clear()
+        config_patch = patch.object(orcid, "_CONFIG_PATH", SIN_CONFIG_INI)
+        config_patch.start()
+        self.addCleanup(config_patch.stop)
+        env_patch = patch.dict(os.environ, ORCID_ENV_SANDBOX)
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+
+    def test_configuration_reads_environment_and_sandbox_endpoints(self):
+        config = orcid.configuracion_oauth()
+        self.assertTrue(config["configurado"])
+        self.assertEqual(config["authorize_url"], "https://sandbox.orcid.org/oauth/authorize")
+        self.assertEqual(config["token_url"], "https://sandbox.orcid.org/oauth/token")
+        self.assertEqual(config["api_base"], "https://pub.sandbox.orcid.org/v3.0")
+        self.assertEqual(config["frontend_origin"], "http://127.0.0.1:5173")
+
+    def test_configuration_without_credentials_is_not_configured(self):
+        with patch.dict(os.environ, {"ORCID_CLIENT_ID": "", "ORCID_CLIENT_SECRET": ""}):
+            self.assertFalse(orcid.configuracion_oauth()["configurado"])
+
+    def test_authorization_url_requests_authenticate_scope_with_state(self):
+        url = httpx.URL(orcid.url_autorizacion("estado-123"))
+        self.assertEqual(str(url.copy_with(query=None)), "https://sandbox.orcid.org/oauth/authorize")
+        self.assertEqual(url.params["client_id"], "APP-TEST")
+        self.assertEqual(url.params["response_type"], "code")
+        self.assertEqual(url.params["scope"], "/authenticate")
+        self.assertEqual(url.params["redirect_uri"], "http://127.0.0.1:8000/api/auth/orcid/callback")
+        self.assertEqual(url.params["state"], "estado-123")
+
+    def test_code_exchange_returns_orcid_of_the_person_who_authorized(self):
+        token = httpx.Response(
+            200,
+            json={"access_token": "t", "orcid": VALID_ORCID, "name": "Ana Prueba"},
+            request=httpx.Request("POST", "https://sandbox.orcid.org/oauth/token"),
+        )
+        with patch("backend.api.orcid.httpx.post", return_value=token) as post:
+            result = orcid.intercambiar_codigo("codigo-abc")
+        self.assertEqual(result, {"orcid": VALID_ORCID, "nombre": "Ana Prueba"})
+        sent = post.call_args.kwargs["data"]
+        self.assertEqual(sent["grant_type"], "authorization_code")
+        self.assertEqual(sent["code"], "codigo-abc")
+        self.assertEqual(sent["redirect_uri"], "http://127.0.0.1:8000/api/auth/orcid/callback")
+
+    def test_code_exchange_rejects_response_without_valid_orcid(self):
+        token = httpx.Response(
+            200,
+            json={"access_token": "t", "orcid": "0000-0000-0000-0002"},
+            request=httpx.Request("POST", "https://sandbox.orcid.org/oauth/token"),
+        )
+        with patch("backend.api.orcid.httpx.post", return_value=token):
+            with self.assertRaises(orcid.ErrorOrcid):
+                orcid.intercambiar_codigo("codigo-abc")
+
+    def test_code_exchange_http_error_raises_orcid_error(self):
+        token = httpx.Response(
+            400,
+            json={"error": "invalid_grant"},
+            request=httpx.Request("POST", "https://sandbox.orcid.org/oauth/token"),
+        )
+        with patch("backend.api.orcid.httpx.post", return_value=token):
+            with self.assertRaises(orcid.ErrorOrcid):
+                orcid.intercambiar_codigo("codigo-usado")
+
+    def _external_ids(self, payload, status=200):
+        token = httpx.Response(
+            200,
+            json={"access_token": "read-token", "expires_in": 3600},
+            request=httpx.Request("POST", "https://sandbox.orcid.org/oauth/token"),
+        )
+        ids = httpx.Response(
+            status,
+            json=payload,
+            request=httpx.Request("GET", "https://pub.sandbox.orcid.org/v3.0/x/external-identifiers"),
+        )
+        with patch("backend.api.orcid.httpx.post", return_value=token),                 patch("backend.api.orcid.httpx.get", return_value=ids) as get:
+            result = orcid.buscar_scopus_id(VALID_ORCID)
+        return result, get
+
+    def test_scopus_author_id_is_read_from_public_external_identifiers(self):
+        result, get = self._external_ids({"external-identifier": [
+            {"external-id-type": "ResearcherID", "external-id-value": "A-1234-2010"},
+            {"external-id-type": "Scopus Author ID", "external-id-value": "57193456789"},
+        ]})
+        self.assertEqual(result, 57193456789)
+        self.assertEqual(
+            get.call_args.args[0],
+            f"https://pub.sandbox.orcid.org/v3.0/{VALID_ORCID}/external-identifiers",
+        )
+
+    def test_scopus_missing_or_unexpected_payload_returns_none(self):
+        self.assertIsNone(self._external_ids({"external-identifier": []})[0])
+        self.assertIsNone(self._external_ids({"inesperado": True})[0])
+        self.assertIsNone(self._external_ids({"external-identifier": [
+            {"external-id-type": "Scopus Author ID", "external-id-value": "no-numerico"},
+        ]})[0])
+        self.assertIsNone(self._external_ids({}, status=500)[0])
 
 
 class PureCsvTests(unittest.TestCase):

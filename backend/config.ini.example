@@ -7,3 +7,17 @@ dbname = bd_coordinador_repositorios
 user = postgres
 password = CAMBIAR_CLAVE
 connect_timeout = 5
+
+; Inicio de sesión con ORCID (OAuth). Datos de la app registrada en
+; https://sandbox.orcid.org/developer-tools (pruebas) o orcid.org (producción).
+; Tambien pueden darse con variables de entorno ORCID_CLIENT_ID, etc.
+[orcid]
+client_id = APP-XXXXXXXXXXXXXXXX
+client_secret = CAMBIAR_SECRETO
+; sandbox o production
+environment = sandbox
+; Debe coincidir EXACTAMENTE con la URI registrada en ORCID.
+redirect_uri = http://127.0.0.1:8000/api/auth/orcid/callback
+; A donde vuelve el navegador tras el login. Desarrollo con Vite:
+; http://127.0.0.1:5173. Con el frontend compilado servido por FastAPI: dejar vacio.
+frontend_origin = http://127.0.0.1:5173
