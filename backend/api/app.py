@@ -4,6 +4,7 @@ import hmac
 import logging
 import os
 import secrets
+import sys
 import uuid
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
-from ..src.db.conexion import ErrorConexion
+from ..src.db.conexion import ErrorConexion, carpeta_base
 from ..src.repositorios import (
     coordinadores,
     historico,
@@ -48,7 +49,11 @@ from .schemas import (
 LOGGER = logging.getLogger("cris.api")
 ROOT = Path(__file__).resolve().parents[2]
 FRONTEND_DIST = ROOT / "frontend" / "portal" / "dist"
-UPLOADS_DIR = ROOT / "backend" / "static" / "uploads"
+# config.ini vive en backend/ o, en el ejecutable de Windows, junto al .exe.
+CONFIG_PATH = Path(carpeta_base()) / "config.ini"
+# En el .exe las fotos se guardan junto al ejecutable (la carpeta interna es temporal).
+UPLOADS_DIR = (Path(carpeta_base()) / "uploads" if getattr(sys, "frozen", False)
+               else ROOT / "backend" / "static" / "uploads")
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 FOTO_MAX_BYTES = 2 * 1024 * 1024
 FOTO_EXTENSIONES = {".jpg", ".jpeg", ".png"}
@@ -114,7 +119,7 @@ def _mensaje_legible(error):
 def _session_secret():
     secret = os.getenv("PORTAL_SESSION_SECRET", "").strip()
     if not secret:
-        config_path = ROOT / "backend" / "config.ini"
+        config_path = CONFIG_PATH
         parser = configparser.ConfigParser()
         if config_path.is_file():
             parser.read(config_path, encoding="utf-8")

@@ -23,12 +23,14 @@ from urllib.parse import urlencode
 
 import httpx
 
+from ..src.db.conexion import carpeta_base
+
 
 _ORCID_PATTERN = re.compile(r"^[0-9]{4}-[0-9]{4}-[0-9]{4}-[0-9]{3}[0-9X]$")
 _TOKEN_CACHE = {}
 _TOKEN_LOCK = threading.Lock()
 _TIMEOUT = httpx.Timeout(8.0, connect=4.0)
-_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.ini"
+_CONFIG_PATH = Path(carpeta_base()) / "config.ini"
 _SCOPUS_TYPE = "scopus author id"
 
 _ENTORNOS = {
