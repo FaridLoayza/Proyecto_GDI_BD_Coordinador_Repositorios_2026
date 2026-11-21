@@ -240,3 +240,17 @@ tbody tr:nth-child(even) { background: #f7faf8; }
   .candidate-researcher, .candidate-link { align-items: flex-start; flex-direction: column; }
   .rank-row { grid-template-columns: minmax(100px, .8fr) minmax(65px, 1fr) 28px; gap: 8px; font-size: 10px; }
 }
+
+/* Panel de administrador */
+.admin-layout { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 16px; align-items: start; }
+.admin-tables nav { display: flex; flex-direction: column; gap: 2px; max-height: 70vh; overflow-y: auto; margin-top: 8px; }
+.admin-table-link { text-align: left; border: 0; background: transparent; padding: 6px 8px; border-radius: 6px; font-size: 13px; cursor: pointer; color: inherit; }
+.admin-table-link:hover { background: rgba(6, 64, 43, 0.08); }
+.admin-table-link.active { background: var(--brand); color: #fff; }
+.admin-content { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.admin-search { display: flex; gap: 8px; margin: 8px 0 12px; flex-wrap: wrap; }
+.admin-search input { flex: 1 1 220px; }
+.admin-actions { display: flex; gap: 6px; white-space: nowrap; }
+.admin-pagination { display: flex; gap: 12px; align-items: center; justify-content: flex-end; margin-top: 12px; }
+.admin-access-link { text-align: center; margin-top: 8px; }
+@media (max-width: 800px) { .admin-layout { grid-template-columns: 1fr; } .admin-tables nav { max-height: 200px; } }

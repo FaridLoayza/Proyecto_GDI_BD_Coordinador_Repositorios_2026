@@ -18,7 +18,7 @@ with patch.dict(os.environ, {"PORTAL_SESSION_SECRET": "portal-test-secret-012345
     from backend.api import orcid, pure_csv
     from backend.api.app import app
     from backend.src.db.conexion import ErrorOperacion
-    from backend.src.repositorios import historico, publicaciones_candidatas
+    from backend.src.repositorios import administracion, historico, publicaciones_candidatas
 
 
 VALID_ORCID = "0000-0002-1825-0097"
@@ -584,6 +584,17 @@ class OrcidLoginApiTests(unittest.TestCase):
             )
         return response, actualizar
 
+    def test_registration_returns_email_and_does_not_log_in(self):
+        self.connect_orcid()
+        with patch("backend.api.app.solicitudes_investigador.registrar"), \
+                patch("backend.api.app.solicitudes_investigador.autenticar") as autenticar:
+            response = self.register(solicitud_valida())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["correo"], "ana@example.test")
+        self.assertTrue(response.json()["csrf_token"])
+        autenticar.assert_not_called()
+        self.assertIsNone(self.client.get("/api/auth/me").json()["user"])
+
     def test_correction_without_reconnecting_keeps_stored_orcid(self):
         self.login_investigator()
         stored = {"id": 2, "estado": "observada", "codigo_orcid": VALID_ORCID, "scopus_id": 222}
@@ -603,6 +614,86 @@ class OrcidLoginApiTests(unittest.TestCase):
         payload = actualizar.call_args.args[1]
         self.assertEqual(payload["orcid"], self.OTRO_ORCID)
         self.assertIsNone(payload["scopus_id"])
+
+
+ADMIN = {"id": 1, "correo": "admin@example.test", "nombre": "Admin"}
+
+
+class AdminApiTests(unittest.TestCase):
+    def setUp(self):
+        self.client = TestClient(app)
+        self.csrf = self.client.get("/api/auth/me").json()["csrf_token"]
+
+    def headers(self):
+        return {"X-CSRF-Token": self.csrf}
+
+    def login(self, role="admin"):
+        if role == "admin":
+            target, value = "backend.api.app.administracion.autenticar", ADMIN
+        else:
+            target, value = "backend.api.app.coordinadores.autenticar", {
+                "codigo_ucsm": 1234567890, "nombre": "Coord", "correo_electronico": "c@example.test"}
+        with patch(target, return_value=value):
+            response = self.client.post("/api/auth/login", json={
+                "role": role, "email": "admin@example.test", "password": "x"}, headers=self.headers())
+        self.csrf = response.json()["csrf_token"]
+        return response
+
+    def test_admin_login_returns_admin_role(self):
+        response = self.login()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["user"]["role"], "admin")
+
+    def test_admin_routes_require_admin_session(self):
+        self.assertEqual(self.client.get("/api/admin/tables").status_code, 401)
+        self.login("coordinator")
+        self.assertEqual(self.client.get("/api/admin/tables").status_code, 403)
+
+    def test_admin_lists_tables_and_rows(self):
+        self.login()
+        with patch("backend.api.app.administracion.listar_tablas", return_value=[{"nombre": "persona"}]):
+            self.assertEqual(self.client.get("/api/admin/tables").json(), [{"nombre": "persona"}])
+        with patch("backend.api.app.administracion.listar_filas", return_value={"filas": []}) as listar:
+            response = self.client.get("/api/admin/tables/persona/rows?pagina=2&tamano=10&buscar=ana")
+        self.assertEqual(response.status_code, 200)
+        listar.assert_called_once_with("persona", 2, 10, "ana")
+
+    def test_page_size_is_limited(self):
+        self.login()
+        self.assertEqual(self.client.get("/api/admin/tables/persona/rows?tamano=1000").status_code, 422)
+
+    def test_admin_writes_require_csrf(self):
+        self.login()
+        with patch("backend.api.app.administracion.crear") as crear:
+            response = self.client.post("/api/admin/tables/persona/rows", json={"valores": {}})
+        self.assertEqual(response.status_code, 403)
+        crear.assert_not_called()
+
+    def test_admin_create_update_delete_delegate_to_repository(self):
+        self.login()
+        with patch("backend.api.app.administracion.crear", return_value={"id": 5}) as crear:
+            created = self.client.post("/api/admin/tables/persona/rows",
+                                       json={"valores": {"dni": "12345678"}}, headers=self.headers())
+        self.assertEqual(created.json(), {"id": 5})
+        crear.assert_called_once_with("persona", {"dni": "12345678"})
+        with patch("backend.api.app.administracion.actualizar", return_value={"id": 5}) as actualizar:
+            self.client.put("/api/admin/tables/persona/rows",
+                            json={"clave": {"dni": "12345678"}, "valores": {"nombres": "Ana"}},
+                            headers=self.headers())
+        actualizar.assert_called_once_with("persona", {"dni": "12345678"}, {"nombres": "Ana"})
+        with patch("backend.api.app.administracion.eliminar", return_value=1) as eliminar:
+            deleted = self.client.request("DELETE", "/api/admin/tables/persona/rows",
+                                          json={"clave": {"dni": "12345678"}}, headers=self.headers())
+        self.assertEqual(deleted.json(), {"eliminadas": 1})
+        eliminar.assert_called_once_with("persona", {"dni": "12345678"})
+
+    def test_missing_table_or_row_returns_404(self):
+        self.login()
+        with patch("backend.api.app.administracion.listar_filas",
+                   side_effect=administracion.NoEncontrado("No existe la tabla 'x'.")):
+            response = self.client.get("/api/admin/tables/x/rows")
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("No existe", response.json()["detail"])
 
 
 class OrcidOAuthTests(unittest.TestCase):

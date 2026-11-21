@@ -11,7 +11,7 @@ import psycopg2
 from src.db.conexion import ErrorConexion, conectar, leer_configuracion
 
 SCRIPT = os.path.join(os.path.dirname(__file__), "base_datos_repositorio.sql")
-TABLAS_ESPERADAS = 42
+TABLAS_ESPERADAS = 43
 NOMBRE_BASE = "bd_coordinador_repositorios"
 BASE_ADMINISTRATIVA = "postgres"  # base que siempre existe; desde aqui se crea NOMBRE_BASE
 

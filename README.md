@@ -61,6 +61,13 @@ repositorios_ucsm/
    & "C:\Program Files\PostgreSQL\16\bin\psql.exe" -U postgres -d bd_coordinador_repositorios -f backend\database\migracion_scopus_opcional.sql
    ```
 
+   Si la base ya estaba instalada antes de la cuenta de administrador, ejecutar
+   también una sola vez:
+
+   ```powershell
+   & "C:\Program Files\PostgreSQL\16\bin\psql.exe" -U postgres -d bd_coordinador_repositorios -f backend\database\migracion_cuenta_administrador.sql
+   ```
+
 6. Iniciar FastAPI en modo desarrollo desde la raíz del proyecto:
 
    ```powershell
@@ -94,6 +101,31 @@ python -m backend.api
 
 Luego abre `http://127.0.0.1:8000`. En este modo solo se inicia el backend Python,
 porque FastAPI sirve los archivos compilados del frontend.
+
+## Cuentas de administrador
+
+Hay dos cuentas de administrador, independientes del flujo investigador/coordinador:
+
+- **Panel admin del portal** (`/login/admin` → `/admin`): consulta, crea, edita y
+  elimina registros de cualquier tabla. Las restricciones, claves foráneas y
+  triggers de la base se siguen aplicando. Para crear o cambiar la cuenta:
+
+  ```powershell
+  python backend/database/crear_admin.py
+  ```
+
+  Con el ejecutable de Windows: `PortalCRIS.exe --crear-admin`.
+
+- **Rol de PostgreSQL `admin_cris`**: `SELECT`, `INSERT`, `UPDATE` y `DELETE` en
+  todas las tablas, uso de secuencias y `EXECUTE` de funciones y procedimientos.
+  No es superusuario (no puede crear ni borrar tablas). Se usa desde pgAdmin/psql:
+
+  ```powershell
+  & "C:\Program Files\PostgreSQL\16\bin\psql.exe" -U postgres -d bd_coordinador_repositorios -v clave="CLAVE_DE_12_O_MAS" -f backend\database\rol_admin_cris.sql
+  ```
+
+  Opcionalmente, la sección `[postgresql_admin]` de `config.ini` hace que el panel
+  admin se conecte a la base con ese rol.
 
 ## Pruebas
 

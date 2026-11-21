@@ -22,3 +22,10 @@ redirect_uri = http://127.0.0.1:8000/api/auth/orcid/callback
 ; el portal (127.0.0.1:5173 con Vite, 127.0.0.1:8000 con el .exe). Este valor
 ; solo se usa si esa direccion no es local; normalmente puede quedar vacio.
 frontend_origin =
+
+; Opcional: el panel de administrador (/admin) se conecta con este usuario de
+; PostgreSQL. Creelo con backend/database/rol_admin_cris.sql. Si se omite esta
+; seccion, el panel usa la conexion de [postgresql].
+; [postgresql_admin]
+; user = admin_cris
+; password = CAMBIAR_CLAVE_ADMIN
