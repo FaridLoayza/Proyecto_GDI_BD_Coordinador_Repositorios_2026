@@ -41,11 +41,24 @@ repositorios_ucsm/
 3. Copiar `backend/config.ini.example` como `backend/config.ini` y configurar los datos
    de conexión a PostgreSQL (`dbname = bd_coordinador_repositorios`). La contraseña
    también puede proporcionarse con la variable de entorno `UCSM_DB_PASSWORD`.
+   Para el inicio de sesión con ORCID, completar también la sección `[orcid]`
+   (`client_id`, `client_secret`, `environment`, `redirect_uri`, `frontend_origin`)
+   con los datos de la app registrada en `sandbox.orcid.org`. El `redirect_uri` debe
+   ser idéntico al registrado (`http://127.0.0.1:8000/api/auth/orcid/callback`) y el
+   navegador debe abrirse siempre en `127.0.0.1`, no en `localhost`, para que la
+   sesión no se pierda al volver de ORCID.
 4. Instalar el esquema en la base de datos. El instalador crea la base
    `bd_coordinador_repositorios` automáticamente si no existe:
 
    ```powershell
    python backend/database/instalar_bd.py
+   ```
+
+5. Si la base ya estaba instalada antes del login con ORCID, ejecutar una sola vez
+   la migración que vuelve opcional el Scopus Author ID:
+
+   ```powershell
+   & "C:\Program Files\PostgreSQL\16\bin\psql.exe" -U postgres -d bd_coordinador_repositorios -f backend\database\migracion_scopus_opcional.sql
    ```
 
 6. Iniciar FastAPI en modo desarrollo desde la raíz del proyecto:

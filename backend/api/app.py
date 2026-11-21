@@ -4,16 +4,17 @@ import hmac
 import logging
 import os
 import secrets
+import sys
 import uuid
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
-from ..src.db.conexion import ErrorConexion
+from ..src.db.conexion import ErrorConexion, carpeta_base
 from ..src.repositorios import (
     coordinadores,
     historico,
@@ -48,7 +49,11 @@ from .schemas import (
 LOGGER = logging.getLogger("cris.api")
 ROOT = Path(__file__).resolve().parents[2]
 FRONTEND_DIST = ROOT / "frontend" / "portal" / "dist"
-UPLOADS_DIR = ROOT / "backend" / "static" / "uploads"
+# config.ini vive en backend/ o, en el ejecutable de Windows, junto al .exe.
+CONFIG_PATH = Path(carpeta_base()) / "config.ini"
+# En el .exe las fotos se guardan junto al ejecutable (la carpeta interna es temporal).
+UPLOADS_DIR = (Path(carpeta_base()) / "uploads" if getattr(sys, "frozen", False)
+               else ROOT / "backend" / "static" / "uploads")
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 FOTO_MAX_BYTES = 2 * 1024 * 1024
 FOTO_EXTENSIONES = {".jpg", ".jpeg", ".png"}
@@ -114,7 +119,7 @@ def _mensaje_legible(error):
 def _session_secret():
     secret = os.getenv("PORTAL_SESSION_SECRET", "").strip()
     if not secret:
-        config_path = ROOT / "backend" / "config.ini"
+        config_path = CONFIG_PATH
         parser = configparser.ConfigParser()
         if config_path.is_file():
             parser.read(config_path, encoding="utf-8")
@@ -267,9 +272,110 @@ def auth_logout(request: Request):
     return {"ok": True}
 
 
+# --- Login con ORCID (OAuth, scope /authenticate) ---------------------------
+# El ORCID que se guarda en la postulación es el que ORCID confirma tras el
+# inicio de sesión del propio investigador, no el que se escribe en el
+# formulario. El estado anti-CSRF (`state`) y el resultado viven en la sesión
+# firmada del servidor (cookie cris_session); no se usa ninguna tabla.
+ORCID_SESSION_KEYS = ("orcid_verificado", "orcid_nombre", "orcid_scopus_id")
+ORCID_DESTINOS = {"register": "/register", "investigator": "/investigator"}
+
+
+def _limpiar_orcid_sesion(request):
+    for key in ORCID_SESSION_KEYS:
+        request.session.pop(key, None)
+
+
+@app.get("/api/auth/orcid/login")
+def orcid_login(request: Request, next: str = "register"):
+    config = orcid.configuracion_oauth()
+    if not config["configurado"]:
+        raise HTTPException(
+            status_code=503,
+            detail="El inicio de sesión con ORCID no está configurado en el servidor "
+                   "(falta client_id, client_secret o redirect_uri).",
+        )
+    state = secrets.token_urlsafe(32)
+    request.session["orcid_oauth_state"] = state
+    request.session["orcid_oauth_next"] = next if next in ORCID_DESTINOS else "register"
+    return RedirectResponse(orcid.url_autorizacion(state), status_code=307)
+
+
+@app.get("/api/auth/orcid/callback")
+def orcid_callback(
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+):
+    config = orcid.configuracion_oauth()
+    expected = request.session.pop("orcid_oauth_state", None)
+    destino = ORCID_DESTINOS[request.session.pop("orcid_oauth_next", "register")]
+
+    def volver(resultado):
+        return RedirectResponse(
+            f"{config['frontend_origin']}{destino}?orcid={resultado}", status_code=307)
+
+    # El state se consume siempre: un mismo enlace de vuelta no sirve dos veces.
+    if not expected or not state or not hmac.compare_digest(expected, state):
+        return volver("error")
+    if error:
+        return volver("cancelado")
+    if not code:
+        return volver("error")
+    try:
+        verificado = orcid.intercambiar_codigo(code)
+    except orcid.ErrorOrcid as exc:
+        LOGGER.warning("Login ORCID fallido: %s", exc)
+        return volver("error")
+    request.session["orcid_verificado"] = verificado["orcid"]
+    request.session["orcid_nombre"] = verificado["nombre"]
+    request.session["orcid_scopus_id"] = orcid.buscar_scopus_id(verificado["orcid"])
+    return volver("ok")
+
+
+@app.get("/api/auth/orcid/status")
+def orcid_status(request: Request):
+    try:
+        configurado = orcid.configuracion_oauth()["configurado"]
+    except ValueError:
+        configurado = False
+    return {
+        "configurado": configurado,
+        "orcid": request.session.get("orcid_verificado"),
+        "nombre": request.session.get("orcid_nombre"),
+        "scopus_id": request.session.get("orcid_scopus_id"),
+    }
+
+
+@app.post("/api/auth/orcid/disconnect", dependencies=[Depends(require_csrf)])
+def orcid_disconnect(request: Request):
+    _limpiar_orcid_sesion(request)
+    return {"ok": True}
+
+
+def _aplicar_orcid_de_sesion(request, payload):
+    """Reemplaza ORCID y Scopus del formulario por los verificados en la sesión.
+
+    Retorna True si había un ORCID verificado en la sesión.
+    """
+    verificado = request.session.get("orcid_verificado")
+    if not verificado:
+        return False
+    scopus = request.session.get("orcid_scopus_id")
+    payload["orcid"] = verificado
+    payload["scopus_id"] = str(scopus) if scopus else None
+    return True
+
+
 @app.post("/api/researcher/register", dependencies=[Depends(require_csrf)])
 def researcher_register(body: RegisterBody, request: Request):
     payload = body.application.to_procedure_payload()
+    if not _aplicar_orcid_de_sesion(request, payload):
+        raise HTTPException(
+            status_code=409,
+            detail="Conecte su cuenta ORCID antes de enviar la postulación.",
+        )
     solicitudes_investigador.registrar(payload, body.password)
     user = solicitudes_investigador.autenticar(payload["correo"], body.password)
     safe_user = {
@@ -309,7 +415,15 @@ def researcher_update_application(body: ApplicationBody, request: Request):
     # inválido). El procedimiento valida que el nuevo valor no esté en uso
     # por otra cuenta antes de aplicarlo.
     payload = body.to_procedure_payload()
+    # Si el investigador volvió a conectar ORCID se usa ese; si no, se conserva
+    # el ORCID/Scopus ya guardado (se verificó al registrarse). El valor que
+    # llega en el JSON nunca se usa.
+    if not _aplicar_orcid_de_sesion(request, payload):
+        payload["orcid"] = solicitud["codigo_orcid"]
+        scopus = solicitud.get("scopus_id")
+        payload["scopus_id"] = str(scopus) if scopus else None
     solicitudes_investigador.actualizar(solicitud, payload)
+    _limpiar_orcid_sesion(request)
     return {"ok": True, "estado": "pendiente_revision"}
 
 

@@ -39,7 +39,8 @@ class ApplicationBody(StrictModel):
     escuela: str = Field(min_length=1, max_length=60)
     celular: str = Field(pattern=r"^9[0-9]{8}$")
     orcid: str = Field(pattern=r"^[0-9]{4}-[0-9]{4}-[0-9]{4}-[0-9]{3}[0-9X]$")
-    scopus_id: int = Field(gt=0)
+    # Opcional: se autocompleta desde ORCID; no todo investigador tiene Scopus ID.
+    scopus_id: int | None = Field(default=None, gt=0)
     link_cti: str = Field(min_length=8, max_length=255)
     resumen: str = Field(min_length=1, max_length=2000)
     foto: str = Field(min_length=5, max_length=255)
@@ -142,7 +143,7 @@ class ApplicationBody(StrictModel):
             "escuela": self.escuela,
             "celular": str(self.celular),
             "orcid": self.orcid,
-            "scopus_id": str(self.scopus_id),
+            "scopus_id": str(self.scopus_id) if self.scopus_id is not None else None,
             "link_cti": self.link_cti,
             "resumen": self.resumen,
             "foto": self.foto,
