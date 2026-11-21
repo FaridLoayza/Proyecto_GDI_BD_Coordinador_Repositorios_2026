@@ -481,6 +481,24 @@ class OrcidLoginApiTests(unittest.TestCase):
         self.assertEqual(status["scopus_id"], 57193456789)
         self.assertTrue(status["configurado"])
 
+    def callback_ok_desde(self, base_url):
+        client = TestClient(app, follow_redirects=False, base_url=base_url)
+        login = client.get("/api/auth/orcid/login?next=register")
+        state = httpx.URL(login.headers["location"]).params["state"]
+        with patch("backend.api.app.orcid.intercambiar_codigo",
+                   return_value={"orcid": VALID_ORCID, "nombre": None}), \
+                patch("backend.api.app.orcid.buscar_scopus_id", return_value=None):
+            return client.get(f"/api/auth/orcid/callback?code=abc&state={state}")
+
+    def test_callback_returns_to_origin_where_login_started(self):
+        # Con el .exe el portal se abre en :8000 aunque config.ini diga :5173.
+        callback = self.callback_ok_desde("http://127.0.0.1:8000")
+        self.assertEqual(callback.headers["location"], "http://127.0.0.1:8000/register?orcid=ok")
+
+    def test_callback_never_returns_to_external_host(self):
+        callback = self.callback_ok_desde("http://sitio-malicioso.example")
+        self.assertEqual(callback.headers["location"], "http://127.0.0.1:5173/register?orcid=ok")
+
     def test_callback_with_wrong_state_does_not_store_orcid(self):
         self.client.get("/api/auth/orcid/login?next=register")
         with patch("backend.api.app.orcid.intercambiar_codigo") as exchange:

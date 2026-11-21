@@ -7,6 +7,7 @@ import secrets
 import sys
 import uuid
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -286,6 +287,22 @@ def _limpiar_orcid_sesion(request):
         request.session.pop(key, None)
 
 
+ORIGENES_LOCALES = {"127.0.0.1", "localhost", "::1"}
+
+
+def _origen_de_vuelta(origen, config):
+    """Dirección del frontend a la que se vuelve tras el login con ORCID.
+
+    Se usa el origen guardado al iniciar el login si es local o coincide con
+    frontend_origin (evita redirigir a hosts arbitrarios); si no, frontend_origin.
+    """
+    if origen:
+        host = urlsplit(origen).hostname
+        if host in ORIGENES_LOCALES or origen == config["frontend_origin"]:
+            return origen
+    return config["frontend_origin"]
+
+
 @app.get("/api/auth/orcid/login")
 def orcid_login(request: Request, next: str = "register"):
     config = orcid.configuracion_oauth()
@@ -298,6 +315,9 @@ def orcid_login(request: Request, next: str = "register"):
     state = secrets.token_urlsafe(32)
     request.session["orcid_oauth_state"] = state
     request.session["orcid_oauth_next"] = next if next in ORCID_DESTINOS else "register"
+    # Origen desde el que se abrió el portal (Vite en :5173 en desarrollo, el
+    # propio backend en :8000 con el .exe). Al volver de ORCID se regresa ahí.
+    request.session["orcid_oauth_origin"] = f"{request.url.scheme}://{request.url.netloc}"
     return RedirectResponse(orcid.url_autorizacion(state), status_code=307)
 
 
@@ -312,9 +332,10 @@ def orcid_callback(
     expected = request.session.pop("orcid_oauth_state", None)
     destino = ORCID_DESTINOS[request.session.pop("orcid_oauth_next", "register")]
 
+    origen = _origen_de_vuelta(request.session.pop("orcid_oauth_origin", None), config)
+
     def volver(resultado):
-        return RedirectResponse(
-            f"{config['frontend_origin']}{destino}?orcid={resultado}", status_code=307)
+        return RedirectResponse(f"{origen}{destino}?orcid={resultado}", status_code=307)
 
     # El state se consume siempre: un mismo enlace de vuelta no sirve dos veces.
     if not expected or not state or not hmac.compare_digest(expected, state):

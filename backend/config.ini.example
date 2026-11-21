@@ -18,6 +18,7 @@ client_secret = CAMBIAR_SECRETO
 environment = sandbox
 ; Debe coincidir EXACTAMENTE con la URI registrada en ORCID.
 redirect_uri = http://127.0.0.1:8000/api/auth/orcid/callback
-; A donde vuelve el navegador tras el login. Desarrollo con Vite:
-; http://127.0.0.1:5173. Con el frontend compilado servido por FastAPI: dejar vacio.
-frontend_origin = http://127.0.0.1:5173
+; Tras el login se vuelve automaticamente a la direccion desde la que se abrio
+; el portal (127.0.0.1:5173 con Vite, 127.0.0.1:8000 con el .exe). Este valor
+; solo se usa si esa direccion no es local; normalmente puede quedar vacio.
+frontend_origin =
