@@ -72,6 +72,7 @@ jobs:
         run: |
           $nombre = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { "dev-$($env:GITHUB_SHA.Substring(0,7))" }
           $carpeta = "GestorInvestigacion-$nombre-windows"
+          New-Item -ItemType Directory -Path $carpeta -Force
           Copy-Item dist/GestorInvestigacion.exe $carpeta/
           Copy-Item backend/config.ini.example $carpeta/
           Copy-Item "entrega/ejecutable/*" $carpeta/
