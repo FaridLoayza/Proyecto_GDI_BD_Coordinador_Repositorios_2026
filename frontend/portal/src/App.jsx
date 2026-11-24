@@ -111,16 +111,16 @@ function useAuth() {
 
 function Brand() {
   return (
-    <Link className="brand" to="/" aria-label="Portal CRIS, inicio">
-      <img className="brand-logo" src="/assets/cris-horizontal.png" alt="CRIS" />
+    <Link className="brand" to="/" aria-label="Gestor de Investigación, inicio">
+      <img className="brand-logo" src="/assets/cris-horizontal.png" alt="Gestor de Investigación" />
     </Link>
   )
 }
 
 function SidebarBrand({ to }) {
   return (
-    <Link className="sidebar-brand" to={to} aria-label="Portal CRIS, inicio">
-      <img src="/assets/cris-horizontal-claro.png" alt="Sistema Institucional de Investigación CRIS" />
+    <Link className="sidebar-brand" to={to} aria-label="Gestor de Investigación, inicio">
+      <img src="/assets/cris-horizontal-claro.png" alt="Gestor de Investigación" />
     </Link>
   )
 }
@@ -203,7 +203,7 @@ function Home() {
     <section className="home">
       <div className="hero">
         <p className="eyebrow">Sistema de información de investigación</p>
-        <h1>Portal CRIS</h1>
+        <h1>Gestor de Investigación</h1>
       </div>
       <div className="access-grid">
         <article className="access-card">
@@ -597,36 +597,85 @@ function CoordinatorDashboard() {
   )
 }
 
+// --- Borrado lógico: filtro de estado y acciones de baja/reactivación ---------
+const ESTADOS_REGISTRO = [['activos', 'Activos'], ['bajas', 'Dados de baja'], ['todos', 'Todos']]
+
+function EstadoFilter({ value, onChange }) {
+  return <label className="field estado-filter"><span>Mostrar</span><select value={value} onChange={(event) => onChange(event.target.value)}>{ESTADOS_REGISTRO.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
+}
+
+function EstadoBadge({ activo }) {
+  return activo === false ? <span className="status status-rechazada">Dado de baja</span> : null
+}
+
+function BajaPanel({ entidad, registro, basePath, onChanged }) {
+  const { request } = useAuth()
+  const [motivo, setMotivo] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  if (!registro) return null
+  async function darDeBaja() {
+    if (!window.confirm(`¿Dar de baja ${entidad}? El registro no se borra: queda inactivo y se puede reactivar.`)) return
+    setBusy(true); setError('')
+    try { await request(`${basePath}/baja`, { method: 'POST', body: { motivo: motivo.trim() || null } }); setMotivo(''); await onChanged(`Se dio de baja ${entidad}.`) }
+    catch (problem) { setError(problem.message) } finally { setBusy(false) }
+  }
+  async function reactivar() {
+    setBusy(true); setError('')
+    try { await request(`${basePath}/reactivar`, { method: 'POST', body: {} }); await onChanged(`Se reactivó ${entidad}.`) }
+    catch (problem) { setError(problem.message) } finally { setBusy(false) }
+  }
+  return <div className="baja-panel">
+    {error && <Alert kind="error">{error}</Alert>}
+    {registro.activo === false ? <>
+      <Alert kind="warning">Dado de baja el {String(registro.fecha_baja || '').slice(0, 16).replace('T', ' ')}{registro.motivo_baja ? ` · Motivo: ${registro.motivo_baja}` : ''}</Alert>
+      <button type="button" className="button button-outline" disabled={busy} onClick={reactivar}>{busy ? 'Procesando…' : 'Reactivar'}</button>
+    </> : <>
+      <TextArea label="Motivo de la baja (opcional)" value={motivo} onChange={setMotivo} rows={2} maxLength={255} />
+      <button type="button" className="button button-danger" disabled={busy} onClick={darDeBaja}>{busy ? 'Procesando…' : 'Dar de baja'}</button>
+      <p className="small-muted">Borrado lógico: el registro deja de mostrarse en los listados y reportes, pero se conserva en la base de datos.</p>
+    </>}
+  </div>
+}
+
 function CoordinatorInvestigators() {
   const { request } = useAuth()
   const [term, setTerm] = useState('')
   const [search, setSearch] = useState('')
+  const [estado, setEstado] = useState('activos')
   const [items, setItems] = useState([])
   const [selected, setSelected] = useState(null)
   const [detail, setDetail] = useState(null)
   const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(false)
   const load = useCallback(async () => {
     setError(''); setLoading(true)
-    try { setItems(await request(`/api/coordinator/investigators?search=${encodeURIComponent(search)}`)) }
+    try { setItems(await request(`/api/coordinator/investigators?search=${encodeURIComponent(search)}&estado=${estado}`)) }
     catch (problem) { setError(problem.message) } finally { setLoading(false) }
-  }, [request, search])
+  }, [request, search, estado])
   useEffect(() => { load() }, [load])
   async function open(code) {
-    setError(''); setSelected(code); setDetail(null)
+    setError(''); setMessage(''); setSelected(code); setDetail(null)
     try { setDetail(await request(`/api/coordinator/investigators/${code}`)) }
     catch (problem) { setError(problem.message) }
   }
+  async function changed(text) {
+    setMessage(text); await load()
+    setDetail(await request(`/api/coordinator/investigators/${selected}`))
+  }
   return <div className="page-stack">
-    <div className="page-heading"><p className="eyebrow">Directorio institucional</p><h1>Investigadores</h1><p>Consulta los perfiles aprobados. Las nuevas altas y correcciones se resuelven desde la Bandeja de revisión.</p></div>
+    <div className="page-heading"><p className="eyebrow">Directorio institucional</p><h1>Investigadores</h1><p>Consulta los perfiles aprobados y gestiona sus bajas. Las nuevas altas y correcciones se resuelven desde la Bandeja de revisión.</p></div>
     {error && <Alert kind="error">{error}</Alert>}
+    {message && <Alert kind="success">{message}</Alert>}
     <section className="panel">
       <form className="search-bar" onSubmit={(event) => { event.preventDefault(); setSearch(term) }}>
         <TextField label="Buscar por nombre o código institucional" value={term} onChange={setTerm} />
+        <EstadoFilter value={estado} onChange={setEstado} />
         <button className="button button-primary"><BsSearch aria-hidden="true" />Buscar</button>
       </form>
-      <div className="table-scroll"><table><thead><tr><th>Código institucional</th><th>Investigador</th><th>Escuela</th><th>Correo</th><th></th></tr></thead><tbody>
-        {items.map((item) => <tr key={item.codigo_ucsm}><td>{item.codigo_ucsm}</td><td>{item.nombre}</td><td>{item.escuela}</td><td>{item.correo}</td><td><button className="text-link action-link" onClick={() => open(item.codigo_ucsm)}>Ver perfil</button></td></tr>)}
+      <div className="table-scroll"><table><thead><tr><th>Código institucional</th><th>Investigador</th><th>Escuela</th><th>Correo</th><th>Estado</th><th></th></tr></thead><tbody>
+        {items.map((item) => <tr key={item.codigo_ucsm}><td>{item.codigo_ucsm}</td><td>{item.nombre}</td><td>{item.escuela}</td><td>{item.correo}</td><td>{item.activo ? 'Activo' : <EstadoBadge activo={false} />}</td><td><button className="text-link action-link" onClick={() => open(item.codigo_ucsm)}>Ver perfil</button></td></tr>)}
       </tbody></table></div>
       {loading && <p className="loading">Cargando investigadores…</p>}
       {!loading && !items.length && <div className="empty-state">No se encontraron investigadores.</div>}
@@ -647,6 +696,7 @@ function CoordinatorInvestigators() {
           ['ODS', detail.ods?.join(', ') || '—'], ['Intereses', detail.intereses || '—'], ['Resumen', detail.resumen || '—'],
         ].map(([label, value]) => <div className="detail-pair" key={label}><dt>{label}</dt><dd>{value || '—'}</dd></div>)}
       </dl>}
+      <BajaPanel entidad="al investigador" registro={detail} basePath={`/api/coordinator/investigators/${selected}`} onChanged={changed} />
     </section>}
   </div>
 }
@@ -654,27 +704,35 @@ function CoordinatorInvestigators() {
 function CoordinatorPatentRegistry() {
   const { request } = useAuth()
   const [items, setItems] = useState([])
+  const [estado, setEstado] = useState('activos')
   const [selected, setSelected] = useState(null)
   const [detail, setDetail] = useState(null)
   const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(true)
   const load = useCallback(async () => {
     setError(''); setLoading(true)
-    try { setItems(await request('/api/coordinator/patent-registry')) }
+    try { setItems(await request(`/api/coordinator/patent-registry?estado=${estado}`)) }
     catch (problem) { setError(problem.message) } finally { setLoading(false) }
-  }, [request])
+  }, [request, estado])
   useEffect(() => { load() }, [load])
   async function open(number) {
-    setError(''); setSelected(number); setDetail(null)
+    setError(''); setMessage(''); setSelected(number); setDetail(null)
     try { setDetail(await request(`/api/coordinator/patent-registry/${encodeURIComponent(number)}`)) }
     catch (problem) { setError(problem.message) }
   }
+  async function changed(text) {
+    setMessage(text); await load()
+    setDetail(await request(`/api/coordinator/patent-registry/${encodeURIComponent(selected)}`))
+  }
   return <div className="page-stack">
-    <div className="page-heading"><p className="eyebrow">Propiedad intelectual</p><h1>Patentes registradas</h1><p>Consulta el catálogo definitivo. Las nuevas patentes se incorporan al aprobar una solicitud en la Bandeja.</p></div>
+    <div className="page-heading"><p className="eyebrow">Propiedad intelectual</p><h1>Patentes registradas</h1><p>Consulta el catálogo definitivo y gestiona sus bajas. Las nuevas patentes se incorporan al aprobar una solicitud en la Bandeja.</p></div>
     {error && <Alert kind="error">{error}</Alert>}
+    {message && <Alert kind="success">{message}</Alert>}
     <section className="panel">
-      <div className="table-scroll"><table><thead><tr><th>Número</th><th>Título</th><th>Fecha de registro</th><th>País</th><th>Inventores</th><th></th></tr></thead><tbody>
-        {items.map((item) => <tr key={item.n_patente}><td>{item.n_patente}</td><td>{item.titulo}</td><td>{String(item.fecha_registro).slice(0, 10)}</td><td>{item.pais}</td><td>{item.inventores || '—'}</td><td><button className="text-link action-link" onClick={() => open(item.n_patente)}>Ver detalle</button></td></tr>)}
+      <div className="search-bar"><EstadoFilter value={estado} onChange={setEstado} /></div>
+      <div className="table-scroll"><table><thead><tr><th>Número</th><th>Título</th><th>Fecha de registro</th><th>País</th><th>Inventores</th><th>Estado</th><th></th></tr></thead><tbody>
+        {items.map((item) => <tr key={item.n_patente}><td>{item.n_patente}</td><td>{item.titulo}</td><td>{String(item.fecha_registro).slice(0, 10)}</td><td>{item.pais}</td><td>{item.inventores || '—'}</td><td>{item.activo ? 'Activa' : <EstadoBadge activo={false} />}</td><td><button className="text-link action-link" onClick={() => open(item.n_patente)}>Ver detalle</button></td></tr>)}
       </tbody></table></div>
       {loading && <p className="loading">Cargando patentes…</p>}
       {!loading && !items.length && <div className="empty-state">No hay patentes registradas.</div>}
@@ -688,6 +746,7 @@ function CoordinatorPatentRegistry() {
           ['Clasificación OCDE', detail.ocde || '—'],
         ].map(([label, value]) => <div className="detail-pair" key={label}><dt>{label}</dt><dd>{value || '—'}</dd></div>)}
       </dl>}
+      <BajaPanel entidad="la patente" registro={detail} basePath={`/api/coordinator/patent-registry/${encodeURIComponent(selected)}`} onChanged={changed} />
     </section>}
   </div>
 }
@@ -696,27 +755,34 @@ function CoordinatorPublications() {
   const { request } = useAuth()
   const [term, setTerm] = useState('')
   const [search, setSearch] = useState('')
+  const [estado, setEstado] = useState('activos')
   const [items, setItems] = useState([])
   const [selected, setSelected] = useState(null)
   const [tab, setTab] = useState('catalog')
   const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(true)
   const load = useCallback(async () => {
     setError('')
     try {
-      setItems(await request(`/api/coordinator/publications?search=${encodeURIComponent(search)}`))
+      setItems(await request(`/api/coordinator/publications?search=${encodeURIComponent(search)}&estado=${estado}`))
     } catch (problem) { setError(problem.message) } finally { setLoading(false) }
-  }, [request, search])
+  }, [request, search, estado])
   useEffect(() => { load() }, [load])
   async function select(uuid) {
-    setError(''); setSelected(null)
+    setError(''); setMessage(''); setSelected(null)
     try {
       setSelected(await request(`/api/coordinator/publications/${uuid}`))
     } catch (problem) { setError(problem.message) }
   }
+  async function changed(text) {
+    setMessage(text); await load()
+    setSelected(await request(`/api/coordinator/publications/${selected.uuid}`))
+  }
   return <div className="page-stack">
     <div className="page-heading"><p className="eyebrow">Producción científica</p><h1>Histórico de publicaciones</h1><p>El catálogo muestra publicaciones consolidadas; la importación y depuración de Pure se revisa aparte. No es el historial de accesos de Biblioteca.</p></div>
     {error && <Alert kind="error">{error}</Alert>}
+    {message && <Alert kind="success">{message}</Alert>}
     <div className="tab-row" role="tablist">
       <button className={`tab-button${tab === 'catalog' ? ' selected' : ''}`} role="tab" aria-selected={tab === 'catalog'} onClick={() => setTab('catalog')}>Publicaciones</button>
       <button className={`tab-button${tab === 'pure' ? ' selected' : ''}`} role="tab" aria-selected={tab === 'pure'} onClick={() => setTab('pure')}>Importar y depurar Pure</button>
@@ -726,10 +792,11 @@ function CoordinatorPublications() {
         <h2>Catálogo oficial</h2>
         <form className="search-bar" onSubmit={(event) => { event.preventDefault(); setSearch(term) }}>
           <TextField label="Buscar por título" value={term} onChange={setTerm} />
+          <EstadoFilter value={estado} onChange={setEstado} />
           <button className="button button-primary"><BsSearch aria-hidden="true" />Buscar</button>
         </form>
         <div className="publication-results">{items.map((item) => <button className={`publication-result${selected?.uuid === item.uuid ? ' selected' : ''}`} key={item.uuid} onClick={() => select(item.uuid)}>
-          <strong>{item.titulo}</strong><span>{item.anio} · {item.tipo}</span><small>{item.idioma} · {item.categoria}</small>
+          <strong>{item.titulo}</strong><span>{item.anio} · {item.tipo}</span><small>{item.idioma} · {item.categoria}</small>{!item.activo && <EstadoBadge activo={false} />}
         </button>)}</div>
         {loading && <p className="loading">Cargando publicaciones…</p>}
         {!loading && !items.length && <div className="empty-state">No se encontraron publicaciones.</div>}
@@ -740,6 +807,7 @@ function CoordinatorPublications() {
           {Object.entries(selected.formulario).map(([label, value]) => <div className="detail-pair" key={label}><dt>{label.replaceAll('_', ' ')}</dt><dd>{value || '—'}</dd></div>)}
           <div className="detail-pair"><dt>UUID</dt><dd>{selected.uuid}</dd></div>
         </dl>}
+        <BajaPanel entidad="la publicación" registro={selected} basePath={selected ? `/api/coordinator/publications/${selected.uuid}` : ''} onChanged={changed} />
         <p className="notice">La edición directa está pausada. Los cambios de Pure se harán sobre candidaturas y solo pasarán al catálogo después de la aprobación.</p>
       </section>
     </div> : <PureImportReview />}
@@ -1139,7 +1207,7 @@ function CoordinatorReports() {
     {error && <Alert kind="error">{error}</Alert>}{message && <Alert>{message}</Alert>}
     <section className="panel">
       <div className="section-title-row"><div><p className="eyebrow">Consultas disponibles</p><h2>Catálogo de reportes</h2></div><span className="status">{catalog.length} consultas</span></div>
-      <div className="report-query-bar"><label className="field"><span>Consulta</span><select value={selectedQuery} onChange={(event) => setSelectedQuery(event.target.value)}>{catalog.map((item) => <option key={item.id} value={item.id}>{String(item.id).padStart(2, '0')} · {item.titulo}{item.usa_join ? ' · JOIN' : ''}</option>)}</select></label><button className="button button-primary" disabled={!selectedQuery || busy} onClick={runQuery}>{busy ? 'Ejecutando…' : 'Ejecutar consulta'}</button></div>
+      <div className="report-query-bar"><label className="field"><span>Consulta</span><select value={selectedQuery} onChange={(event) => setSelectedQuery(event.target.value)}>{catalog.map((item) => <option key={item.id} value={item.id}>{String(item.id).padStart(2, '0')} · {item.titulo}{item.usa_join ? ' · JOIN' : ''} ({item.procedimiento})</option>)}</select></label><button className="button button-primary" disabled={!selectedQuery || busy} onClick={runQuery}>{busy ? 'Ejecutando…' : 'Ejecutar consulta'}</button></div>
       {result && <div className="report-result"><h3>{result.titulo} · {result.filas.length} fila(s)</h3>{result.filas.length ? <div className="table-scroll"><table><thead><tr>{result.columnas.map((column) => <th key={column}>{column}</th>)}</tr></thead><tbody>{result.filas.map((row, index) => <tr key={index}>{row.map((value, cell) => <td key={cell}>{value == null ? '—' : typeof value === 'object' ? JSON.stringify(value) : String(value)}</td>)}</tr>)}</tbody></table></div> : <div className="empty-state">La consulta no devolvió resultados.</div>}</div>}
     </section>
     <section className="panel">

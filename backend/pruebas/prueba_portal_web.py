@@ -91,11 +91,13 @@ class PortalApiTests(unittest.TestCase):
         self.assertEqual(response.json()["publicaciones"], 7)
         self.assertEqual(response.json()["ranking_ods"][0][1], 2)
 
-    def test_investigators_and_registered_patents_are_coordinator_read_only_sections(self):
+    def test_investigator_and_patent_directories_show_active_records_with_status(self):
         self.login_coordinator()
-        with patch("backend.api.app.investigadores.listar", return_value=[
-            (1234567890, "Ana Prueba", "Ingeniería", "ana@example.test", 987654321),
-        ]), patch("backend.api.app.investigadores.obtener", return_value={
+        baja = {"activo": True, "fecha_baja": None, "motivo_baja": None}
+        with patch("backend.api.app.investigadores.listar_detalle", return_value=[{
+            "codigo_ucsm": 1234567890, "nombre": "Ana Prueba", "escuela_profesional": "Ingeniería",
+            "correo_elec": "ana@example.test", "n_celular": 987654321, **baja,
+        }]) as listar, patch("backend.api.app.investigadores.obtener", return_value={
             "codigo_ucsm": 1234567890, "nombres": "Ana", "apellido_paterno": "Prueba",
             "apellido_materno": "Portal", "ods": [], "intereses": "",
         }):
@@ -103,22 +105,49 @@ class PortalApiTests(unittest.TestCase):
             profile = self.client.get("/api/coordinator/investigators/1234567890")
         self.assertEqual(directory.status_code, 200)
         self.assertEqual(directory.json()[0]["escuela"], "Ingeniería")
+        self.assertTrue(directory.json()[0]["activo"])
+        listar.assert_called_once_with("Ana", "activos")
         self.assertEqual(profile.status_code, 200)
         self.assertEqual(profile.json()["nombres"], "Ana")
         self.assertEqual(self.client.post("/api/coordinator/investigators").status_code, 405)
 
-        with patch("backend.api.app.patentes.listar", return_value=[
-            ("PE-12345", "Patente de prueba", "2024-01-01", "Perú", "1234567890"),
-        ]), patch("backend.api.app.patentes.obtener", return_value={
+        with patch("backend.api.app.patentes.listar_detalle", return_value=[{
+            "n_patente": "PE-12345", "titulo_patente": "Patente de prueba", "fecha_registro": "2024-01-01",
+            "pais": "Perú", "inventores": "1234567890", **baja,
+        }]) as listar_pat, patch("backend.api.app.patentes.obtener", return_value={
             "n_patente": "PE-12345", "titulo": "Patente de prueba", "inventores": [1234567890],
         }):
-            patents = self.client.get("/api/coordinator/patent-registry")
+            patents = self.client.get("/api/coordinator/patent-registry?estado=todos")
             patent = self.client.get("/api/coordinator/patent-registry/PE-12345")
         self.assertEqual(patents.status_code, 200)
         self.assertEqual(patents.json()[0]["n_patente"], "PE-12345")
+        listar_pat.assert_called_once_with("todos")
         self.assertEqual(patent.status_code, 200)
         self.assertEqual(patent.json()["titulo"], "Patente de prueba")
         self.assertEqual(self.client.post("/api/coordinator/patent-registry").status_code, 405)
+
+    def test_invalid_status_filter_is_rejected(self):
+        self.login_coordinator()
+        self.assertEqual(self.client.get("/api/coordinator/investigators?estado=borrados").status_code, 422)
+
+    def test_logical_delete_and_reactivation_call_procedures(self):
+        self.login_coordinator()
+        casos = [
+            ("investigadores", "/api/coordinator/investigators/1234567890", 1234567890),
+            ("patentes", "/api/coordinator/patent-registry/PE-12345", "PE-12345"),
+            ("historico", "/api/coordinator/publications/00000000-0000-0000-0000-000000000001",
+             "00000000-0000-0000-0000-000000000001"),
+        ]
+        for modulo, ruta, ident in casos:
+            with patch(f"backend.api.app.{modulo}.eliminar") as eliminar,                     patch(f"backend.api.app.{modulo}.reactivar") as reactivar:
+                sin_csrf = self.client.post(f"{ruta}/baja", json={"motivo": "x"})
+                baja = self.post(f"{ruta}/baja", {"motivo": "Registro duplicado"})
+                alta = self.post(f"{ruta}/reactivar", {})
+            self.assertEqual(sin_csrf.status_code, 403)
+            self.assertEqual(baja.json(), {"ok": True, "activo": False})
+            self.assertEqual(alta.json(), {"ok": True, "activo": True})
+            eliminar.assert_called_once_with(ident, "Registro duplicado")
+            reactivar.assert_called_once_with(ident)
 
     def test_report_queries_are_catalogued_and_report_generation_requires_csrf(self):
         self.login_coordinator()

@@ -1,12 +1,14 @@
-"""CRUD de investigadores. Insertar, modificar y borrar se hacen con procedimientos
-almacenados (sp_registrar/modificar/eliminar_investigador); aqui solo se preparan los datos."""
+"""CRUD de investigadores. Insertar, modificar, dar de baja y reactivar se hacen con
+procedimientos almacenados (sp_registrar/modificar/eliminar/reactivar_investigador);
+aqui solo se preparan los datos. Eliminar es un borrado logico (activo = FALSE)."""
 from ..db.conexion import consultar_dicts, ejecutar_procedimiento
 from . import utilidades as u
 
 _SQL_LISTAR = """
 SELECT i.codigo_ucsm,
        pe.apellido_paterno || ' ' || pe.apellido_materno || ', ' || pe.nombres AS nombre,
-       i.escuela_profesional, i.correo_elec, i.n_celular
+       i.escuela_profesional, i.correo_elec, i.n_celular,
+       i.activo, i.fecha_baja, i.motivo_baja
 FROM investigador i
 JOIN persona pe ON pe.dni = i.dni
 {filtro}
@@ -18,6 +20,7 @@ SELECT i.codigo_ucsm, pe.dni, pe.nombres, pe.apellido_paterno, pe.apellido_mater
        pe.genero, pe.fecha_nacimiento,
        i.escuela_profesional AS escuela, i.n_celular AS celular, i.correo_elec AS correo,
        i.pure_person_id, i.pure_estado, i.pure_registrado_por, i.pure_registrado_en,
+       i.activo, i.fecha_baja, i.motivo_baja,
        fi.codigo_orcid AS orcid, fi.scopus_id, fi.link_cti_vitae AS link_cti,
        fi.foto_perfil AS foto, fi.resumen_academico AS resumen,
        COALESCE((SELECT array_agg(o.ods ORDER BY o.ods)
@@ -31,18 +34,25 @@ WHERE i.codigo_ucsm = %s
 """
 
 
-def listar(filtro=""):
-    """Filas (codigo, nombre, escuela, correo, celular). filtro busca en nombre o codigo."""
+def listar_detalle(filtro="", estado="activos"):
+    """Diccionarios con los datos del directorio. estado: activos | bajas | todos."""
+    condiciones, parametros = [], []
     filtro = (filtro or "").strip()
     if filtro:
-        sql = _SQL_LISTAR.format(filtro=(
-            "WHERE (pe.nombres || ' ' || pe.apellido_paterno || ' ' || pe.apellido_materno "
-            "|| ' ' || i.codigo_ucsm::text) ILIKE %s"))
-        filas = consultar_dicts(sql, (f"%{filtro}%",))
-    else:
-        filas = consultar_dicts(_SQL_LISTAR.format(filtro=""))
+        condiciones.append("(pe.nombres || ' ' || pe.apellido_paterno || ' ' || pe.apellido_materno "
+                           "|| ' ' || i.codigo_ucsm::text) ILIKE %s")
+        parametros.append(f"%{filtro}%")
+    condicion_estado = u.condicion_estado(estado, "i")
+    if condicion_estado:
+        condiciones.append(condicion_estado)
+    where = ("WHERE " + " AND ".join(condiciones)) if condiciones else ""
+    return consultar_dicts(_SQL_LISTAR.format(filtro=where), tuple(parametros) or None)
+
+
+def listar(filtro="", estado="activos"):
+    """Filas (codigo, nombre, escuela, correo, celular). filtro busca en nombre o codigo."""
     return [(f["codigo_ucsm"], f["nombre"], f["escuela_profesional"], f["correo_elec"],
-             f["n_celular"]) for f in filas]
+             f["n_celular"]) for f in listar_detalle(filtro, estado)]
 
 
 def opciones():
@@ -52,7 +62,7 @@ def opciones():
 
 def escuelas():
     filas = consultar_dicts("SELECT DISTINCT escuela_profesional FROM investigador "
-                            "ORDER BY escuela_profesional")
+                            "WHERE activo ORDER BY escuela_profesional")
     return [f["escuela_profesional"] for f in filas]
 
 
@@ -127,5 +137,12 @@ def modificar(codigo, d):
                            [None] * 14 + ["varchar[]", "varchar[]"])
 
 
-def eliminar(codigo):
-    ejecutar_procedimiento("sp_eliminar_investigador", [u.entero(codigo, "El codigo UCSM")])
+def eliminar(codigo, motivo=None):
+    """Borrado logico: el investigador queda inactivo con fecha y motivo de baja."""
+    ejecutar_procedimiento("sp_eliminar_investigador",
+                           [u.entero(codigo, "El codigo institucional"), u.texto_opcional(motivo)],
+                           [None, "varchar"])
+
+
+def reactivar(codigo):
+    ejecutar_procedimiento("sp_reactivar_investigador", [u.entero(codigo, "El codigo institucional")])

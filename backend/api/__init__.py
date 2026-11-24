@@ -1,1 +1,1 @@
-"""API FastAPI del portal CRIS."""
+"""API FastAPI del Gestor de Investigación."""

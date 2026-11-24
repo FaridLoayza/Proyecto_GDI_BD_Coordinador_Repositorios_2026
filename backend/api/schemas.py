@@ -71,7 +71,7 @@ class ApplicationBody(StrictModel):
         value = value.strip()
         if value not in ESCUELAS_UCSM:
             raise ValueError(
-                "Seleccione una escuela profesional de la lista de la UCSM."
+                "Seleccione una escuela profesional de la lista oficial."
             )
         return value
 
@@ -403,3 +403,8 @@ class AdminUpdateBody(StrictModel):
 
 class AdminKeyBody(StrictModel):
     clave: dict[str, Any]
+
+
+class BajaBody(StrictModel):
+    """Motivo opcional del borrado lógico."""
+    motivo: str | None = Field(default=None, max_length=255)

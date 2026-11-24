@@ -12,9 +12,9 @@ WHERE lower(c.correo_electronico) = lower(%s)
 """
 
 _SQL_RESUMEN = """
-SELECT (SELECT COUNT(*) FROM investigador)                       AS investigadores,
-       (SELECT COUNT(*) FROM patente)                            AS patentes,
-       (SELECT COUNT(*) FROM historico)                          AS publicaciones,
+SELECT (SELECT COUNT(*) FROM investigador WHERE activo)          AS investigadores,
+       (SELECT COUNT(*) FROM patente WHERE activo)               AS patentes,
+       (SELECT COUNT(*) FROM historico WHERE activo)             AS publicaciones,
        (SELECT COUNT(*) FROM reporte)                            AS reportes,
        (SELECT COUNT(*) FROM reporte
          WHERE codigo_ucsm_coordinador = %s)                     AS mis_reportes

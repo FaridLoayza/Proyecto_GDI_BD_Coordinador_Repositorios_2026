@@ -1,4 +1,4 @@
-# Repositorios UCSM - Aplicativo
+# Gestor de Investigación - Aplicativo (Grupo 01)
 
 Aplicativo web para registrar y revisar postulaciones de investigadores, gestionar
 solicitudes de patentes e importar publicaciones de investigación. Utiliza PostgreSQL
@@ -11,91 +11,129 @@ solicitudes de patentes e importar publicaciones de investigación. Utiliza Post
 - Registro y seguimiento de solicitudes de patentes.
 - Importación de publicaciones desde CSV de Pure y revisión de registros pendientes.
 - Directorio de investigadores y reportes del repositorio.
+- 15 reportes (consultas) implementados como procedimientos almacenados
+  `sp_reporte_01` ... `sp_reporte_15`; 8 de ellos usan JOIN.
+- Borrado lógico de investigadores, patentes y publicaciones: "dar de baja" y
+  "reactivar" mediante `sp_eliminar_*` y `sp_reactivar_*` (los registros no se borran).
+- Panel de administrador con CRUD sobre todas las tablas mediante los procedimientos
+  `sp_admin_insertar`, `sp_admin_actualizar` y `sp_admin_eliminar`.
+- Ejecutable de Windows `GestorInvestigacion.exe` (sección *Ejecutable de Windows*).
+
+Las cuentas de prueba están en [CREDENCIALES_PRUEBA.md](CREDENCIALES_PRUEBA.md).
 
 ## Estructura
 
 ```text
-repositorios_ucsm/
+gestor-investigacion/
   backend/
     api/                         API web
     config.ini.example           Plantilla de conexión a PostgreSQL
     requirements.txt             Dependencias de Python
     database/
-      base_datos_repositorio.sql Esquema de la base de datos
+      base_datos_repositorio.sql Script completo: tablas, procedimientos, triggers y datos de prueba
       instalar_bd.py             Instalador del esquema
+      crear_admin.py             Crea la cuenta de administrador del portal
+    lanzador_windows.py          Punto de entrada de GestorInvestigacion.exe
     pruebas/                      Pruebas del backend y la base de datos
     src/db/conexion.py            Conexión y consultas PostgreSQL
   frontend/
     portal/                       Aplicación web en React y Vite
+  entrega/ejecutable/             Archivos de la carpeta EJECUTABLE del release
+  .github/workflows/              Generación automática del release para Windows
 ```
 
 ## Puesta en marcha
 
+Los comandos de Python y npm funcionan tanto en **CMD** como en **PowerShell**.
+Cuando cambia el directorio, se incluyen los comandos específicos de cada terminal.
+
 1. Instalar Python 3.10 o superior, Node.js con npm y PostgreSQL 16.
 2. Desde la raíz del proyecto, instalar las dependencias del backend:
 
-   ```powershell
-   python -m pip install -r backend/requirements.txt
+   ```cmd
+   python -m pip install -r backend\requirements.txt
    ```
 
-3. Copiar `backend/config.ini.example` como `backend/config.ini` y configurar los datos
-   de conexión a PostgreSQL (`dbname = bd_coordinador_repositorios`). La contraseña
-   también puede proporcionarse con la variable de entorno `UCSM_DB_PASSWORD`.
+3. Si aún no existe `backend\config.ini`, copia `backend\config.ini.example` usando
+   el comando correspondiente y configura la conexión a PostgreSQL
+   (`dbname = bd_coordinador_repositorios`):
+
+   CMD:
+
+   ```cmd
+   copy backend\config.ini.example backend\config.ini
+   ```
+
+   PowerShell:
+
+   ```powershell
+   Copy-Item backend\config.ini.example backend\config.ini
+   ```
+
+   La contraseña también puede proporcionarse con la variable de entorno `UCSM_DB_PASSWORD`.
    Para el inicio de sesión con ORCID, completar también la sección `[orcid]`
    (`client_id`, `client_secret`, `environment`, `redirect_uri`, `frontend_origin`)
    con los datos de la app registrada en `sandbox.orcid.org`. El `redirect_uri` debe
    ser idéntico al registrado (`http://127.0.0.1:8000/api/auth/orcid/callback`) y el
    navegador debe abrirse siempre en `127.0.0.1`, no en `localhost`, para que la
    sesión no se pierda al volver de ORCID.
-4. Instalar el esquema en la base de datos. El instalador crea la base
-   `bd_coordinador_repositorios` automáticamente si no existe:
+4. Solo para una instalación nueva, instala el esquema en una base vacía. El instalador
+   crea `bd_coordinador_repositorios` si no existe y se niega a modificar una base que
+   ya contiene tablas:
 
-   ```powershell
-   python backend/database/instalar_bd.py
+   ```cmd
+   python backend\database\instalar_bd.py
    ```
 
-5. Si la base ya estaba instalada antes del login con ORCID, ejecutar una sola vez
-   la migración que vuelve opcional el Scopus Author ID:
+5. Iniciar la API en modo desarrollo desde la raíz del proyecto:
 
-   ```powershell
-   & "C:\Program Files\PostgreSQL\16\bin\psql.exe" -U postgres -d bd_coordinador_repositorios -f backend\database\migracion_scopus_opcional.sql
+   ```cmd
+   python -m uvicorn backend.api.app:app --reload
    ```
 
-   Si la base ya estaba instalada antes de la cuenta de administrador, ejecutar
-   también una sola vez:
+6. En otra terminal, iniciar el frontend:
 
-   ```powershell
-   & "C:\Program Files\PostgreSQL\16\bin\psql.exe" -U postgres -d bd_coordinador_repositorios -f backend\database\migracion_cuenta_administrador.sql
+   CMD:
+
+   ```cmd
+   cd /d frontend\portal
+   npm ci
+   npm run dev
    ```
 
-6. Iniciar FastAPI en modo desarrollo desde la raíz del proyecto:
-
-   ```powershell
-   fastapi dev backend/api/app.py
-   ```
-
-7. En otra terminal, iniciar el frontend:
+   PowerShell:
 
    ```powershell
    Set-Location frontend\portal
-   npm install
+   npm ci
    npm run dev
    ```
 
    Abrir `http://127.0.0.1:5173`. El frontend se comunica con el backend en
    `http://127.0.0.1:8000`.
 
-Para usar la interfaz compilada servida por FastAPI, compílala:
+Para usar la interfaz compilada servida por FastAPI, compílala desde la raíz del proyecto.
+En CMD:
+
+```cmd
+cd /d frontend\portal
+npm ci
+npm run build
+cd /d ..\..
+```
+
+En PowerShell:
 
 ```powershell
 Set-Location frontend\portal
+npm ci
 npm run build
 Set-Location ..\..
 ```
 
-Luego inicia el backend desde la raíz:
+Luego inicia el backend desde la raíz (el comando es igual en CMD y PowerShell):
 
-```powershell
+```cmd
 python -m backend.api
 ```
 
@@ -110,36 +148,42 @@ Hay dos cuentas de administrador, independientes del flujo investigador/coordina
   elimina registros de cualquier tabla. Las restricciones, claves foráneas y
   triggers de la base se siguen aplicando. Para crear o cambiar la cuenta:
 
-  ```powershell
-  python backend/database/crear_admin.py
+  ```cmd
+  python backend\database\crear_admin.py
   ```
 
-  Con el ejecutable de Windows: `PortalCRIS.exe --crear-admin`.
+  Con el ejecutable de Windows: `GestorInvestigacion.exe --crear-admin`.
 
-- **Rol de PostgreSQL `admin_cris`**: `SELECT`, `INSERT`, `UPDATE` y `DELETE` en
-  todas las tablas, uso de secuencias y `EXECUTE` de funciones y procedimientos.
-  No es superusuario (no puede crear ni borrar tablas). Se usa desde pgAdmin/psql:
-
-  ```powershell
-  & "C:\Program Files\PostgreSQL\16\bin\psql.exe" -U postgres -d bd_coordinador_repositorios -v clave="CLAVE_DE_12_O_MAS" -f backend\database\rol_admin_cris.sql
-  ```
-
-  Opcionalmente, la sección `[postgresql_admin]` de `config.ini` hace que el panel
+- Opcionalmente, la sección `[postgresql_admin]` de `config.ini` hace que el panel
   admin se conecte a la base con ese rol.
+
+## Ejecutable de Windows
+
+Cada tag `vX.Y.Z` publica en *Releases* un `.zip` con la carpeta EJECUTABLE:
+`GestorInvestigacion.exe`, `Gestor de Investigación.cmd` (archivo de inicio que funciona desde cualquier
+ruta), `Gestor de Investigación.url` (acceso directo a `http://127.0.0.1:8000`), `config.ini.example`,
+`LEEME.txt`, `CREDENCIALES_PRUEBA.txt` y el SQL de instalación. Solo requiere PostgreSQL 16:
+
+```cmd
+GestorInvestigacion.exe --instalar-bd
+```
+
+crea la base con el esquema y los datos de prueba, y `GestorInvestigacion.exe --crear-admin`
+crea una cuenta de administrador.
 
 ## Pruebas
 
 Para comprobar la conexión a PostgreSQL:
 
-```powershell
-python backend/pruebas/prueba_conexion.py
+```cmd
+python backend\pruebas\prueba_conexion.py
 ```
 
 Las pruebas del portal y del instalador pueden ejecutarse así:
 
-```powershell
+```cmd
 python -m unittest backend.pruebas.prueba_portal_web
-python backend/pruebas/prueba_instalador_bd.py
+python backend\pruebas\prueba_instalador_bd.py
 ```
 
 Las pruebas de CRUD, triggers y reportes requieren que la conexión a PostgreSQL esté

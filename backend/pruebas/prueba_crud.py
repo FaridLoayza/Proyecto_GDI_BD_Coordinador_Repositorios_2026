@@ -82,8 +82,17 @@ def crud_patente():
                   contiene="no existe")
     esperar_error("Eliminar una patente inexistente", patentes.eliminar, "PE-9999999",
                   contiene="no existe")
-    probar("Eliminar patente (sp_eliminar_patente)", patentes.eliminar, PAT)
-    paso(patentes.obtener(PAT) is None, "La patente ya no existe")
+    probar("Dar de baja la patente (sp_eliminar_patente, borrado logico)", patentes.eliminar, PAT,
+           "Prueba automatica")
+    f = patentes.obtener(PAT)
+    paso(f is not None and f["activo"] is False and f["fecha_baja"] is not None
+         and f["motivo_baja"] == "Prueba automatica",
+         "La patente sigue en la base, inactiva y con fecha y motivo de baja")
+    paso(all(fila[0] != PAT for fila in patentes.listar()), "Ya no aparece en el listado de activas")
+    esperar_error("Dar de baja dos veces", patentes.eliminar, PAT, contiene="ya está dada de baja")
+    probar("Reactivar la patente (sp_reactivar_patente)", patentes.reactivar, PAT)
+    f = patentes.obtener(PAT)
+    paso(f["activo"] is True and f["fecha_baja"] is None, "La patente volvio a estar activa")
 
 
 def crud_historico():
@@ -107,19 +116,31 @@ def crud_historico():
                   contiene="contribuyente", fecha_reporte=date(2000, 1, 1))
     esperar_error("Cargar con URL invalida (CHECK)", historico.guardar,
                   {**D_HIS, "portal_url": "ftp://x"}, COORD, contiene="URL", fecha_reporte=date(2000, 1, 1))
-    probar("Eliminar publicacion (sp_eliminar_historico)", historico.eliminar, uid)
-    paso(historico.obtener(uid) is None, "La publicacion ya no existe")
-    esperar_error("Eliminar una publicacion inexistente", historico.eliminar, uid, contiene="no existe")
+    probar("Dar de baja la publicacion (sp_eliminar_historico, borrado logico)", historico.eliminar, uid)
+    f = historico.obtener(uid)
+    paso(f is not None and f["activo"] is False and f["fecha_baja"] is not None,
+         "La publicacion sigue en la base, inactiva y con fecha de baja")
+    probar("Reactivar la publicacion (sp_reactivar_historico)", historico.reactivar, uid)
+    paso(historico.obtener(uid)["activo"] is True, "La publicacion volvio a estar activa")
+    esperar_error("Dar de baja una publicacion inexistente", historico.eliminar,
+                  "00000000-0000-0000-0000-000000000000", contiene="no existe")
 
 
 def eliminar_investigador():
     print("\n--- Investigador (baja) ---")
     esperar_error("Eliminar un investigador inexistente", investigadores.eliminar, 2099999999,
                   contiene="no existe")
-    probar("Eliminar investigador (sp_eliminar_investigador)", investigadores.eliminar, COD)
-    paso(investigadores.obtener(COD) is None, "El investigador ya no existe")
-    paso(escalar("SELECT COUNT(*) FROM persona WHERE dni = '99999901'") == 0,
-         "Tambien se elimino su registro de persona")
+    probar("Dar de baja al investigador (sp_eliminar_investigador, borrado logico)",
+           investigadores.eliminar, COD, "Prueba automatica")
+    f = investigadores.obtener(COD)
+    paso(f is not None and f["activo"] is False and f["fecha_baja"] is not None,
+         "El investigador sigue en la base, inactivo y con fecha de baja")
+    paso(all(fila[0] != COD for fila in investigadores.listar()),
+         "Ya no aparece en el directorio de activos")
+    paso(any(fila["codigo_ucsm"] == COD for fila in investigadores.listar_detalle("", "bajas")),
+         "Aparece en el listado de dados de baja")
+    probar("Reactivar al investigador (sp_reactivar_investigador)", investigadores.reactivar, COD)
+    paso(investigadores.obtener(COD)["activo"] is True, "El investigador volvio a estar activo")
 
 
 def flujo_postulacion_cris():

@@ -44,6 +44,9 @@ CREATE TABLE investigador (
   escuela_profesional VARCHAR(60) NOT NULL,
   n_celular INTEGER NOT NULL,
   correo_elec VARCHAR(100) NOT NULL,
+  activo BOOLEAN NOT NULL DEFAULT TRUE,
+  fecha_baja TIMESTAMPTZ DEFAULT NULL,
+  motivo_baja VARCHAR(255) DEFAULT NULL,
   CONSTRAINT fk_investigador_persona
     FOREIGN KEY (dni) REFERENCES persona(dni)
     ON UPDATE CASCADE ON DELETE RESTRICT,
@@ -52,7 +55,9 @@ CREATE TABLE investigador (
   CONSTRAINT ck_investigador_celular
     CHECK (n_celular BETWEEN 900000000 AND 999999999),
   CONSTRAINT ck_investigador_correo
-    CHECK (correo_elec LIKE '%_@_%._%')
+    CHECK (correo_elec LIKE '%_@_%._%'),
+  CONSTRAINT ck_investigador_baja
+    CHECK (activo OR fecha_baja IS NOT NULL)
 );
 
 CREATE TABLE coordinador_repositorios (
@@ -132,8 +137,13 @@ CREATE TABLE patente (
     CHECK (fecha_registro <= CURRENT_DATE),
   cip VARCHAR(20) NOT NULL,
   pais VARCHAR(50) NOT NULL,
+  activo BOOLEAN NOT NULL DEFAULT TRUE,
+  fecha_baja TIMESTAMPTZ DEFAULT NULL,
+  motivo_baja VARCHAR(255) DEFAULT NULL,
   CONSTRAINT ck_patente_id
-    CHECK (n_patente ~ '^[A-Z]{2}-[0-9]{4,10}$')
+    CHECK (n_patente ~ '^[A-Z]{2}-[0-9]{4,10}$'),
+  CONSTRAINT ck_patente_baja
+    CHECK (activo OR fecha_baja IS NOT NULL)
 );
 
 CREATE TABLE formato_patente (
@@ -246,13 +256,18 @@ CREATE TABLE historico (
   mes_reporte SMALLINT NOT NULL,
   anio_reporte SMALLINT NOT NULL,
   codigo_ucsm_coordinador BIGINT NOT NULL,
+  activo BOOLEAN NOT NULL DEFAULT TRUE,
+  fecha_baja TIMESTAMPTZ DEFAULT NULL,
+  motivo_baja VARCHAR(255) DEFAULT NULL,
   CONSTRAINT fk_historico_reporte
     FOREIGN KEY (dia_reporte, mes_reporte, anio_reporte)
     REFERENCES reporte(dia, mes, anio) ON DELETE RESTRICT,
   CONSTRAINT fk_historico_coordinador
     FOREIGN KEY (codigo_ucsm_coordinador)
     REFERENCES coordinador_repositorios(codigo_ucsm)
-    ON UPDATE CASCADE ON DELETE RESTRICT
+    ON UPDATE CASCADE ON DELETE RESTRICT,
+  CONSTRAINT ck_historico_baja
+    CHECK (activo OR fecha_baja IS NOT NULL)
 );
 
 CREATE TABLE historico_contributors (
@@ -967,7 +982,10 @@ FOR EACH ROW EXECUTE FUNCTION fn_patente_antes_borrar();
 CREATE OR REPLACE FUNCTION fn_historico_synced_at() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
-  NEW.synced_at := CURRENT_TIMESTAMP;
+  -- Dar de baja o reactivar (borrado lógico) no cuenta como re-sincronización.
+  IF NEW.activo IS NOT DISTINCT FROM OLD.activo THEN
+    NEW.synced_at := CURRENT_TIMESTAMP;
+  END IF;
   RETURN NEW;
 END; $$;
 
@@ -1073,26 +1091,6 @@ EXCEPTION
     RAISE EXCEPTION 'ORCID, Scopus ID o CTI Vitae ya pertenece a otro investigador';
 END; $$;
 
-CREATE OR REPLACE PROCEDURE sp_eliminar_investigador(p_codigo_ucsm BIGINT)
-LANGUAGE plpgsql AS $$
-DECLARE
-  v_dni VARCHAR;
-BEGIN
-  SELECT dni INTO v_dni FROM investigador WHERE codigo_ucsm = p_codigo_ucsm;
-  IF v_dni IS NULL THEN
-    RAISE EXCEPTION 'No existe el investigador %', p_codigo_ucsm;
-  END IF;
-
-  DELETE FROM investigador WHERE codigo_ucsm = p_codigo_ucsm;   -- dispara trg_investigador_antes_borrar
-
-  DELETE FROM persona p                                          -- solo si no es tambien coordinador
-   WHERE p.dni = v_dni
-     AND NOT EXISTS (SELECT 1 FROM coordinador_repositorios c WHERE c.dni = p.dni);
-EXCEPTION
-  WHEN foreign_key_violation THEN
-    RAISE EXCEPTION 'No se puede eliminar al investigador %: aparece en reportes generados', p_codigo_ucsm;
-END; $$;
-
 --Bloque c---Procedimientos de patente 
 CREATE OR REPLACE PROCEDURE sp_registrar_patente(
   p_n_patente VARCHAR, p_titulo VARCHAR, p_editorial VARCHAR, p_fecha_registro DATE,
@@ -1146,15 +1144,6 @@ BEGIN
 EXCEPTION
   WHEN unique_violation THEN
     RAISE EXCEPTION 'La patente % ya esta registrada o repite un campo OCDE', p_n_patente;
-END; $$;
-
-CREATE OR REPLACE PROCEDURE sp_eliminar_patente(p_n_patente VARCHAR)
-LANGUAGE plpgsql AS $$
-BEGIN
-  DELETE FROM patente WHERE n_patente = p_n_patente;   -- dispara trg_patente_antes_borrar
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'No existe la patente %', p_n_patente;
-  END IF;
 END; $$;
 
 CREATE OR REPLACE PROCEDURE sp_modificar_patente(
@@ -1300,15 +1289,6 @@ BEGIN
          AS l(pure_id BIGINT, link_type VARCHAR, url VARCHAR, description VARCHAR);
 END; $$;
 
-CREATE OR REPLACE PROCEDURE sp_eliminar_historico(p_uuid UUID)
-LANGUAGE plpgsql AS $$
-BEGIN
-  DELETE FROM historico WHERE uuid = p_uuid;   -- las 6 tablas hijas caen en cascada
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'No existe el registro historico %', p_uuid;
-  END IF;
-END; $$;
-
 --Bloque E--Generar el reporte 
 CREATE OR REPLACE PROCEDURE sp_generar_reporte(p_fecha DATE, p_coordinador BIGINT)
 LANGUAGE plpgsql AS $$
@@ -1337,13 +1317,13 @@ BEGIN
   DELETE FROM tops_escuelas           WHERE dia = v_dia AND mes = v_mes AND anio = v_anio;
 
   INSERT INTO total_publicaciones (dia, mes, anio, publicacion)
-    SELECT DISTINCT v_dia, v_mes, v_anio, h.title FROM historico h;
+    SELECT DISTINCT v_dia, v_mes, v_anio, h.title FROM historico h WHERE h.activo;
 
   INSERT INTO total_investigadores (dia, mes, anio, investigador)
-    SELECT v_dia, v_mes, v_anio, i.codigo_ucsm FROM investigador i;
+    SELECT v_dia, v_mes, v_anio, i.codigo_ucsm FROM investigador i WHERE i.activo;
 
   INSERT INTO cantidad_escuelas_prof (dia, mes, anio, escuelas_prof)
-    SELECT DISTINCT v_dia, v_mes, v_anio, i.escuela_profesional FROM investigador i;
+    SELECT DISTINCT v_dia, v_mes, v_anio, i.escuela_profesional FROM investigador i WHERE i.activo;
 
   INSERT INTO cantidad_ods_vinculados (dia, mes, anio, ods_vinc)
     SELECT DISTINCT v_dia, v_mes, v_anio, (substring(o.ods FROM '^ODS ([0-9]+):'))::SMALLINT
@@ -1372,6 +1352,7 @@ BEGIN
     SELECT v_dia, v_mes, v_anio, t.escuela
     FROM (SELECT escuela_profesional AS escuela
           FROM investigador
+          WHERE activo
           GROUP BY escuela_profesional
           ORDER BY COUNT(*) DESC, escuela_profesional
           LIMIT 3) t;
@@ -1387,6 +1368,7 @@ BEGIN
       JOIN persona pe ON pe.dni = i.dni
       JOIN historico_contributors hc
            ON hc.contributors = pe.apellido_paterno || ' ' || pe.apellido_materno || ', ' || pe.nombres
+      WHERE i.activo
       GROUP BY i.escuela_profesional, i.codigo_ucsm,
                pe.apellido_paterno, pe.apellido_materno, pe.nombres
       ORDER BY i.escuela_profesional, COUNT(*) DESC, i.codigo_ucsm
@@ -1410,7 +1392,7 @@ DECLARE
 BEGIN
   IF p_dni !~ '^[0-9]{8}$'
      OR p_codigo_ucsm NOT BETWEEN 1000000000 AND 9999999999 THEN
-    RAISE EXCEPTION 'El DNI o el codigo UCSM no tiene el formato esperado.';
+    RAISE EXCEPTION 'El DNI o el código institucional no tiene el formato esperado.';
   END IF;
   IF COALESCE(btrim(p_correo), '') = ''
      OR p_correo !~ '^[^@]+@[^@]+\.[^@]+$'
@@ -1518,7 +1500,7 @@ BEGIN
     SELECT 1 FROM cuenta_investigador
      WHERE codigo_ucsm = p_codigo_ucsm AND id <> v_cuenta_id
   ) THEN
-    RAISE EXCEPTION 'Ese codigo UCSM ya esta registrado en otra cuenta.';
+    RAISE EXCEPTION 'Ese código institucional ya está registrado en otra cuenta.';
   END IF;
 
   IF p_datos IS NULL OR jsonb_typeof(p_datos) <> 'object'
@@ -1965,6 +1947,419 @@ END; $$;
 COMMIT;
 
 
+--------------------------------------------------------------------------------
+-- Bloque F -- Entrega 5: borrado lógico, reportes y mantenimiento por procedimientos
+--------------------------------------------------------------------------------
+BEGIN;
+
+-- F.1 Borrado lógico (investigador, patente, historico).
+-- "Eliminar" no borra la fila: la marca como inactiva (activo = FALSE). El
+-- trigger registra la fecha de baja y, al reactivar, limpia fecha y motivo.
+CREATE OR REPLACE FUNCTION fn_registrar_baja() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.activo IS DISTINCT FROM OLD.activo THEN
+    IF NEW.activo THEN
+      NEW.fecha_baja := NULL;
+      NEW.motivo_baja := NULL;
+    ELSE
+      NEW.fecha_baja := CURRENT_TIMESTAMP;
+    END IF;
+  END IF;
+  RETURN NEW;
+END; $$;
+
+DROP TRIGGER IF EXISTS trg_investigador_baja ON investigador;
+CREATE TRIGGER trg_investigador_baja
+BEFORE UPDATE OF activo ON investigador
+FOR EACH ROW EXECUTE FUNCTION fn_registrar_baja();
+
+DROP TRIGGER IF EXISTS trg_patente_baja ON patente;
+CREATE TRIGGER trg_patente_baja
+BEFORE UPDATE OF activo ON patente
+FOR EACH ROW EXECUTE FUNCTION fn_registrar_baja();
+
+DROP TRIGGER IF EXISTS trg_historico_baja ON historico;
+CREATE TRIGGER trg_historico_baja
+BEFORE UPDATE OF activo ON historico
+FOR EACH ROW EXECUTE FUNCTION fn_registrar_baja();
+
+-- F.2 Procedimientos de baja y reactivación.
+CREATE OR REPLACE PROCEDURE sp_eliminar_investigador(p_codigo_ucsm BIGINT, p_motivo VARCHAR DEFAULT NULL)
+LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE investigador
+     SET activo = FALSE, motivo_baja = NULLIF(btrim(p_motivo), '')
+   WHERE codigo_ucsm = p_codigo_ucsm AND activo;          -- dispara trg_investigador_baja
+  IF NOT FOUND THEN
+    IF EXISTS (SELECT 1 FROM investigador WHERE codigo_ucsm = p_codigo_ucsm) THEN
+      RAISE EXCEPTION 'El investigador % ya está dado de baja', p_codigo_ucsm;
+    END IF;
+    RAISE EXCEPTION 'No existe el investigador %', p_codigo_ucsm;
+  END IF;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_reactivar_investigador(p_codigo_ucsm BIGINT)
+LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE investigador SET activo = TRUE
+   WHERE codigo_ucsm = p_codigo_ucsm AND NOT activo;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'El investigador % no existe o ya está activo', p_codigo_ucsm;
+  END IF;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_eliminar_patente(p_n_patente VARCHAR, p_motivo VARCHAR DEFAULT NULL)
+LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE patente
+     SET activo = FALSE, motivo_baja = NULLIF(btrim(p_motivo), '')
+   WHERE n_patente = p_n_patente AND activo;              -- dispara trg_patente_baja
+  IF NOT FOUND THEN
+    IF EXISTS (SELECT 1 FROM patente WHERE n_patente = p_n_patente) THEN
+      RAISE EXCEPTION 'La patente % ya está dada de baja', p_n_patente;
+    END IF;
+    RAISE EXCEPTION 'No existe la patente %', p_n_patente;
+  END IF;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_reactivar_patente(p_n_patente VARCHAR)
+LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE patente SET activo = TRUE
+   WHERE n_patente = p_n_patente AND NOT activo;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'La patente % no existe o ya está activa', p_n_patente;
+  END IF;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_eliminar_historico(p_uuid UUID, p_motivo VARCHAR DEFAULT NULL)
+LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE historico
+     SET activo = FALSE, motivo_baja = NULLIF(btrim(p_motivo), '')
+   WHERE uuid = p_uuid AND activo;                        -- dispara trg_historico_baja
+  IF NOT FOUND THEN
+    IF EXISTS (SELECT 1 FROM historico WHERE uuid = p_uuid) THEN
+      RAISE EXCEPTION 'La publicación % ya está dada de baja', p_uuid;
+    END IF;
+    RAISE EXCEPTION 'No existe el registro historico %', p_uuid;
+  END IF;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_reactivar_historico(p_uuid UUID)
+LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE historico SET activo = TRUE
+   WHERE uuid = p_uuid AND NOT activo;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'La publicación % no existe o ya está activa', p_uuid;
+  END IF;
+END; $$;
+
+-- F.3 Reportes (consultas) como procedimientos.
+-- Cada procedimiento abre un cursor con el resultado; el aplicativo hace
+-- CALL sp_reporte_NN('reporte') y luego FETCH ALL FROM reporte en la misma
+-- transacción. Solo consideran registros activos (borrado lógico).
+
+-- 1. Total de investigadores
+CREATE OR REPLACE PROCEDURE sp_reporte_01(INOUT p_resultado REFCURSOR DEFAULT 'reporte')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT COUNT(*) AS total_investigadores_unicos
+      FROM investigador
+     WHERE activo;
+END; $$;
+
+-- 2. Escuelas profesionales con más investigadores
+CREATE OR REPLACE PROCEDURE sp_reporte_02(INOUT p_resultado REFCURSOR DEFAULT 'reporte')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT escuela_profesional, COUNT(*) AS total_miembros
+      FROM investigador
+     WHERE activo
+     GROUP BY escuela_profesional
+     ORDER BY total_miembros DESC, escuela_profesional;
+END; $$;
+
+-- 3. Directorio de investigadores con datos personales (JOIN)
+CREATE OR REPLACE PROCEDURE sp_reporte_03(INOUT p_resultado REFCURSOR DEFAULT 'reporte')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT i.codigo_ucsm,
+           CONCAT(p.apellido_paterno, ' ', p.apellido_materno, ', ', p.nombres) AS nombre_completo,
+           p.dni, p.genero, i.correo_elec, i.n_celular, i.escuela_profesional
+      FROM investigador i
+      JOIN persona p ON i.dni = p.dni
+     WHERE i.activo
+     ORDER BY nombre_completo;
+END; $$;
+
+-- 4. Investigadores sin patentes asociadas (JOIN)
+CREATE OR REPLACE PROCEDURE sp_reporte_04(INOUT p_resultado REFCURSOR DEFAULT 'reporte')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT i.codigo_ucsm, p.nombres, p.apellido_paterno, p.apellido_materno, i.escuela_profesional
+      FROM investigador i
+      JOIN persona p ON i.dni = p.dni
+      LEFT JOIN formato_investigador fi ON i.codigo_ucsm = fi.codigo_ucsm
+      LEFT JOIN formato_patente_investigador fpi ON fi.n_formato_inv = fpi.n_formato_inv
+     WHERE i.activo AND fpi.n_formato_pat IS NULL
+     ORDER BY p.apellido_paterno, p.apellido_materno;
+END; $$;
+
+-- 5. Evolución de publicaciones por año
+CREATE OR REPLACE PROCEDURE sp_reporte_05(INOUT p_resultado REFCURSOR DEFAULT 'reporte')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT publication_year, COUNT(*) AS total_publicaciones
+      FROM historico
+     WHERE activo
+     GROUP BY publication_year
+     ORDER BY publication_year;
+END; $$;
+
+-- 6. Producción por tipo de documento
+CREATE OR REPLACE PROCEDURE sp_reporte_06(INOUT p_resultado REFCURSOR DEFAULT 'reporte')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT type, COUNT(*) AS cantidad
+      FROM historico
+     WHERE activo
+     GROUP BY type
+     ORDER BY cantidad DESC, type;
+END; $$;
+
+-- 7. Publicaciones recientes por fecha de creación
+CREATE OR REPLACE PROCEDURE sp_reporte_07(INOUT p_resultado REFCURSOR DEFAULT 'reporte')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT uuid, title, publication_year, create_date, portal_url
+      FROM historico
+     WHERE activo AND create_date IS NOT NULL
+     ORDER BY create_date DESC
+     LIMIT 10;
+END; $$;
+
+-- 8. Publicaciones por idioma
+CREATE OR REPLACE PROCEDURE sp_reporte_08(INOUT p_resultado REFCURSOR DEFAULT 'reporte')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT language, COUNT(*) AS total
+      FROM historico
+     WHERE activo
+     GROUP BY language
+     ORDER BY total DESC, language;
+END; $$;
+
+-- 9. Reportes generados por coordinador (JOIN)
+CREATE OR REPLACE PROCEDURE sp_reporte_09(INOUT p_resultado REFCURSOR DEFAULT 'reporte')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT c.codigo_ucsm, p.nombres, p.apellido_paterno,
+           COUNT(r.dia) AS total_reportes_emitidos
+      FROM coordinador_repositorios c
+      JOIN persona p ON c.dni = p.dni
+      LEFT JOIN reporte r ON c.codigo_ucsm = r.codigo_ucsm_coordinador
+     GROUP BY c.codigo_ucsm, p.nombres, p.apellido_paterno
+     ORDER BY total_reportes_emitidos DESC, c.codigo_ucsm;
+END; $$;
+
+-- 10. Enlaces de cada publicación (JOIN)
+CREATE OR REPLACE PROCEDURE sp_reporte_10(INOUT p_resultado REFCURSOR DEFAULT 'reporte')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT h.title, l.link_type, l.url, l.description
+      FROM historico h
+      JOIN historico_links l ON h.uuid = l.uuid
+     WHERE h.activo
+     ORDER BY h.title;
+END; $$;
+
+-- 11. Investigadores asociados a cada ODS (JOIN)
+CREATE OR REPLACE PROCEDURE sp_reporte_11(INOUT p_resultado REFCURSOR DEFAULT 'reporte')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT o.ods, COUNT(*) AS total_asociaciones
+      FROM formato_inv_ods o
+      JOIN formato_investigador fi ON fi.n_formato_inv = o.n_formato_inv
+      JOIN investigador i ON i.codigo_ucsm = fi.codigo_ucsm
+     WHERE i.activo
+     GROUP BY o.ods
+     ORDER BY total_asociaciones DESC, o.ods;
+END; $$;
+
+-- 12. Patentes por país de registro y entidad
+CREATE OR REPLACE PROCEDURE sp_reporte_12(INOUT p_resultado REFCURSOR DEFAULT 'reporte')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT pais, editorial, COUNT(*) AS total_patentes
+      FROM patente
+     WHERE activo
+     GROUP BY pais, editorial
+     ORDER BY total_patentes DESC, pais;
+END; $$;
+
+-- 13. Investigadores con sus ODS vinculados (JOIN)
+CREATE OR REPLACE PROCEDURE sp_reporte_13(INOUT p_resultado REFCURSOR DEFAULT 'reporte')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT i.codigo_ucsm,
+           p.apellido_paterno || ' ' || p.apellido_materno || ', ' || p.nombres AS investigador,
+           i.escuela_profesional,
+           string_agg(o.ods, ' | ' ORDER BY o.ods) AS ods_vinculados
+      FROM investigador i
+      JOIN persona p ON p.dni = i.dni
+      JOIN formato_investigador fi ON fi.codigo_ucsm = i.codigo_ucsm
+      JOIN formato_inv_ods o ON o.n_formato_inv = fi.n_formato_inv
+     WHERE i.activo
+     GROUP BY i.codigo_ucsm, p.apellido_paterno, p.apellido_materno, p.nombres, i.escuela_profesional
+     ORDER BY investigador;
+END; $$;
+
+-- 14. Patentes con sus inventores registrados (JOIN)
+CREATE OR REPLACE PROCEDURE sp_reporte_14(INOUT p_resultado REFCURSOR DEFAULT 'reporte')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT pa.n_patente, pa.titulo_patente, pa.pais,
+           p.apellido_paterno || ' ' || p.apellido_materno || ', ' || p.nombres AS inventor,
+           i.escuela_profesional
+      FROM patente pa
+      JOIN formato_patente fp ON fp.n_patente = pa.n_patente
+      JOIN formato_patente_investigador fpi ON fpi.n_formato_pat = fp.n_formato_pat
+      JOIN formato_investigador fi ON fi.n_formato_inv = fpi.n_formato_inv
+      JOIN investigador i ON i.codigo_ucsm = fi.codigo_ucsm
+      JOIN persona p ON p.dni = i.dni
+     WHERE pa.activo
+     ORDER BY pa.fecha_registro DESC, pa.n_patente, inventor;
+END; $$;
+
+-- 15. Formatos de investigador y coordinador que los valida (JOIN)
+CREATE OR REPLACE PROCEDURE sp_reporte_15(INOUT p_resultado REFCURSOR DEFAULT 'reporte')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT fi.n_formato_inv,
+           pinv.apellido_paterno || ' ' || pinv.apellido_materno || ', ' || pinv.nombres AS investigador,
+           pcoo.apellido_paterno || ' ' || pcoo.apellido_materno || ', ' || pcoo.nombres AS coordinador_validador,
+           c.funcion
+      FROM formato_investigador fi
+      JOIN investigador i ON i.codigo_ucsm = fi.codigo_ucsm
+      JOIN persona pinv ON pinv.dni = i.dni
+      JOIN coordinador_repositorios c ON c.codigo_ucsm = fi.codigo_ucsm_coordinador
+      JOIN persona pcoo ON pcoo.dni = c.dni
+     WHERE i.activo
+     ORDER BY coordinador_validador, investigador;
+END; $$;
+
+-- F.4 Mantenimiento del administrador por procedimientos (CRUD genérico).
+-- El aplicativo valida los nombres de columnas contra el catálogo; aquí además
+-- se valida la tabla y todo identificador se escapa con format('%I').
+-- Las tablas con borrado lógico (columnas activo y fecha_baja) se dan de baja
+-- en lugar de borrarse.
+CREATE OR REPLACE FUNCTION fn_admin_validar_tabla(p_tabla TEXT) RETURNS VOID
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.tables
+                  WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+                    AND table_name = p_tabla) THEN
+    RAISE EXCEPTION 'No existe la tabla %', p_tabla;
+  END IF;
+END; $$;
+
+CREATE OR REPLACE FUNCTION fn_admin_condicion_clave(p_clave JSONB) RETURNS TEXT
+LANGUAGE sql IMMUTABLE AS $$
+  SELECT string_agg(format('t.%1$I IS NOT DISTINCT FROM c.%1$I', k), ' AND ')
+    FROM jsonb_object_keys(p_clave) AS k
+$$;
+
+CREATE OR REPLACE PROCEDURE sp_admin_insertar(
+  p_tabla TEXT, p_valores JSONB, INOUT p_fila JSONB DEFAULT NULL)
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_columnas TEXT;
+BEGIN
+  PERFORM fn_admin_validar_tabla(p_tabla);
+  SELECT string_agg(format('%I', k), ', ') INTO v_columnas
+    FROM jsonb_object_keys(COALESCE(p_valores, '{}'::jsonb)) AS k;
+  IF v_columnas IS NULL THEN
+    EXECUTE format('INSERT INTO %1$I AS t DEFAULT VALUES RETURNING to_jsonb(t.*)', p_tabla)
+       INTO p_fila;
+  ELSE
+    EXECUTE format('INSERT INTO %1$I AS t (%2$s) SELECT %2$s FROM jsonb_populate_record(NULL::%1$I, $1) '
+                   'RETURNING to_jsonb(t.*)', p_tabla, v_columnas)
+       INTO p_fila USING p_valores;
+  END IF;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_admin_actualizar(
+  p_tabla TEXT, p_clave JSONB, p_valores JSONB, INOUT p_fila JSONB DEFAULT NULL)
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_set TEXT;
+BEGIN
+  PERFORM fn_admin_validar_tabla(p_tabla);
+  IF p_clave IS NULL OR p_clave = '{}'::jsonb THEN
+    RAISE EXCEPTION 'Indique la clave primaria de la fila.';
+  END IF;
+  SELECT string_agg(format('%1$I = r.%1$I', k), ', ') INTO v_set
+    FROM jsonb_object_keys(COALESCE(p_valores, '{}'::jsonb)) AS k;
+  IF v_set IS NULL THEN
+    RAISE EXCEPTION 'No hay cambios para guardar.';
+  END IF;
+  EXECUTE format('UPDATE %1$I AS t SET %2$s '
+                 'FROM jsonb_populate_record(NULL::%1$I, $1) AS r, '
+                 '     jsonb_populate_record(NULL::%1$I, $2) AS c '
+                 'WHERE %3$s RETURNING to_jsonb(t.*)',
+                 p_tabla, v_set, fn_admin_condicion_clave(p_clave))
+     INTO p_fila USING p_valores, p_clave;
+  IF p_fila IS NULL THEN
+    RAISE EXCEPTION 'La fila ya no existe; recargue la tabla.' USING ERRCODE = 'no_data_found';
+  END IF;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_admin_eliminar(
+  p_tabla TEXT, p_clave JSONB, INOUT p_filas INTEGER DEFAULT 0)
+LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM fn_admin_validar_tabla(p_tabla);
+  IF p_clave IS NULL OR p_clave = '{}'::jsonb THEN
+    RAISE EXCEPTION 'Indique la clave primaria de la fila.';
+  END IF;
+  IF (SELECT COUNT(*) FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = p_tabla
+         AND column_name IN ('activo', 'fecha_baja')) = 2 THEN
+    -- Borrado lógico: dispara el trigger trg_*_baja.
+    EXECUTE format('UPDATE %1$I AS t SET activo = FALSE '
+                   'FROM jsonb_populate_record(NULL::%1$I, $1) AS c WHERE %2$s AND t.activo',
+                   p_tabla, fn_admin_condicion_clave(p_clave)) USING p_clave;
+  ELSE
+    EXECUTE format('DELETE FROM %1$I AS t USING jsonb_populate_record(NULL::%1$I, $1) AS c WHERE %2$s',
+                   p_tabla, fn_admin_condicion_clave(p_clave)) USING p_clave;
+  END IF;
+  GET DIAGNOSTICS p_filas = ROW_COUNT;
+  IF p_filas = 0 THEN
+    RAISE EXCEPTION 'La fila ya no existe o ya está dada de baja; recargue la tabla.'
+      USING ERRCODE = 'no_data_found';
+  END IF;
+END; $$;
+
+COMMIT;
+
 BEGIN;
 
 INSERT INTO persona (dni, nombres, apellido_paterno, apellido_materno, genero, fecha_nacimiento) VALUES
@@ -2161,116 +2556,1000 @@ INSERT INTO tops_escuelas (dia, mes, anio, top_escuelas) VALUES
 
 
 
+
+-- 2b. DATOS DE PRUEBA ADICIONALES (entrega 5) ---------------------------------
+-- Generados para probar el aplicativo con un volumen mayor de registros.
+
+INSERT INTO persona (dni, nombres, apellido_paterno, apellido_materno, genero, fecha_nacimiento) VALUES
+('40123456', 'Elena Victoria', 'Salinas', 'Rondón', 'Femenino', '1984-06-11'),
+('41234567', 'Óscar Martín', 'Peralta', 'Gómez', 'Masculino', '1979-02-23');
+
+INSERT INTO coordinador_repositorios (codigo_ucsm, dni, fecha_ocupacion_puesto, correo_electronico, contrasenia, fecha_retiro, funcion, direccion_adscrita) VALUES
+(1000234567, '40123456', '2024-01-15', 'coord.demo@ucsm.edu.pe', 'pbkdf2_sha256$200000$e23f0a6462d0bd064bc24c32e745c7f5$5ed9813985bbfdfd2c7bca218eb0c058a86832aa1bd7221c220f64d11bd1178a', NULL, 'Coordinador de repositorios', 'Dirección de Investigación'),
+(1000345678, '41234567', '2019-03-01', 'operalta@ucsm.edu.pe', 'pbkdf2_sha256$200000$85e4aea19de2d285c91b909a8dcd3d89$0d2a2a0ee5f4f720699b35e0452b4e7afcf000641263c1581ff9786c2bc50089', '2024-12-31', 'Coordinador de repositorios', 'Dirección de Investigación');
+
+INSERT INTO persona (dni, nombres, apellido_paterno, apellido_materno, genero, fecha_nacimiento) VALUES
+('46887842', 'Gabriela', 'Salas', 'Cáceres', 'Femenino', '1979-10-20'),
+('70175825', 'Luis Miguel', 'Flores', 'Delgado', 'Masculino', '1965-11-16'),
+('59300639', 'Mariela', 'Huamán', 'Benavente', 'Femenino', '1994-03-21'),
+('47814689', 'Sergio', 'Carpio', 'Talavera', 'Masculino', '1992-09-26'),
+('43280798', 'Lucía', 'Talavera', 'Paredes', 'Femenino', '1998-11-04'),
+('56844759', 'Andrés', 'Rivera', 'Pinto', 'Masculino', '1990-11-10'),
+('70751123', 'Lucía', 'Mamani', 'Chávez', 'Femenino', '1998-08-12'),
+('69423951', 'Manuel', 'Linares', 'Manrique', 'Masculino', '1997-05-15'),
+('67602603', 'Silvia', 'Cornejo', 'Flores', 'Femenino', '1974-08-01'),
+('63974684', 'José Antonio', 'Velarde', 'Benavente', 'Masculino', '1974-01-11'),
+('49082925', 'Sofía', 'Huamán', 'Núñez', 'Femenino', '1984-09-14'),
+('63716460', 'Luis Miguel', 'Mamani', 'Málaga', 'Masculino', '1966-01-17'),
+('69098911', 'Daniela', 'Chávez', 'Talavera', 'Femenino', '1986-08-20'),
+('43233805', 'Álvaro', 'Mamani', 'Ponce', 'Masculino', '1993-11-07'),
+('67788893', 'Daniela', 'Valdivia', 'Zegarra', 'Femenino', '1970-07-10'),
+('75383272', 'Manuel', 'Cáceres', 'Pinto', 'Masculino', '1998-05-27'),
+('52244110', 'Mariela', 'Núñez', 'Benavente', 'Femenino', '1966-06-28'),
+('48899854', 'Juan Carlos', 'Talavera', 'Zegarra', 'Masculino', '1971-05-04'),
+('44289265', 'Gabriela', 'Cáceres', 'Salas', 'Femenino', '1983-06-06'),
+('46299518', 'Renzo', 'Paredes', 'Quispe', 'Masculino', '1987-06-25'),
+('65108571', 'Andrea', 'Núñez', 'Rivera', 'Femenino', '1997-11-09'),
+('48208436', 'Manuel', 'Delgado', 'Ramos', 'Masculino', '1984-07-11'),
+('60283061', 'Carmen Rosa', 'Chávez', 'Cáceres', 'Femenino', '1966-07-19'),
+('76328091', 'Álvaro', 'Benavente', 'Quispe', 'Masculino', '1990-05-26'),
+('52032769', 'Milagros', 'Ponce', 'Talavera', 'Femenino', '1967-11-28'),
+('74132927', 'Fernando', 'Pinto', 'Mamani', 'Masculino', '1974-12-28'),
+('71813806', 'Andrea', 'Ponce', 'Linares', 'Femenino', '1984-04-06'),
+('57784846', 'Álvaro', 'Huamán', 'Delgado', 'Masculino', '1973-12-24'),
+('76170399', 'Sofía', 'Talavera', 'Mamani', 'Femenino', '1998-11-22'),
+('79776892', 'Manuel', 'Benavente', 'Zegarra', 'Masculino', '1977-03-10'),
+('68363756', 'Lucía', 'Arenas', 'Herrera', 'Femenino', '1987-09-06'),
+('60310416', 'Carlos Alberto', 'Málaga', 'Cornejo', 'Masculino', '1978-09-05');
+
+INSERT INTO investigador (codigo_ucsm, dni, escuela_profesional, n_celular, correo_elec) VALUES
+(2018778636, '46887842', 'Ingeniería de Sistemas', 982437103, 'gabriela.salas0@ucsm.edu.pe'),
+(2023202814, '70175825', 'Ingeniería en Inteligencia Artificial', 997054446, 'luis.flores1@ucsm.edu.pe'),
+(2018406311, '59300639', 'Ingeniería Industrial', 912171427, 'mariela.huaman2@ucsm.edu.pe'),
+(2018622668, '47814689', 'Ingeniería Civil', 968846905, 'sergio.carpio3@ucsm.edu.pe'),
+(2022235265, '43280798', 'Ingeniería Ambiental', 984110291, 'lucia.talavera4@ucsm.edu.pe'),
+(2021672136, '56844759', 'Ingeniería Biomédica', 936109392, 'andres.rivera5@ucsm.edu.pe'),
+(2020726286, '70751123', 'Ingeniería Mecatrónica', 938932423, 'lucia.mamani6@ucsm.edu.pe'),
+(2022203152, '69423951', 'Ingeniería de Minas', 935764479, 'manuel.linares7@ucsm.edu.pe'),
+(2013883864, '67602603', 'Medicina Humana', 983359230, 'silvia.cornejo8@ucsm.edu.pe'),
+(2014800949, '63974684', 'Enfermería', 980280510, 'jose.velarde9@ucsm.edu.pe'),
+(2020267899, '49082925', 'Odontología', 952257400, 'sofia.huaman10@ucsm.edu.pe'),
+(2015777665, '63716460', 'Psicología', 962623684, 'luis.mamani11@ucsm.edu.pe'),
+(2018317040, '69098911', 'Derecho', 986869801, 'daniela.chavez12@ucsm.edu.pe'),
+(2018979734, '43233805', 'Administración de Empresas', 921527272, 'alvaro.mamani13@ucsm.edu.pe'),
+(2016658902, '67788893', 'Contabilidad', 923751475, 'daniela.valdivia14@ucsm.edu.pe'),
+(2017225939, '75383272', 'Arquitectura', 986661596, 'manuel.caceres15@ucsm.edu.pe'),
+(2022974045, '52244110', 'Farmacia y Bioquímica', 976481961, 'mariela.nunez16@ucsm.edu.pe'),
+(2020682729, '48899854', 'Medicina Veterinaria y Zootecnia', 986697188, 'juan.talavera17@ucsm.edu.pe'),
+(2014716676, '44289265', 'Educación Inicial', 907692234, 'gabriela.caceres18@ucsm.edu.pe'),
+(2014228996, '46299518', 'Comunicación Social', 979733040, 'renzo.paredes19@ucsm.edu.pe'),
+(2024225242, '65108571', 'Ingeniería de Sistemas', 993321670, 'andrea.nunez20@ucsm.edu.pe'),
+(2022938696, '48208436', 'Ingeniería en Inteligencia Artificial', 915875669, 'manuel.delgado21@ucsm.edu.pe'),
+(2015725950, '60283061', 'Ingeniería Industrial', 916805141, 'carmen.chavez22@ucsm.edu.pe'),
+(2020852108, '76328091', 'Ingeniería Civil', 942244317, 'alvaro.benavente23@ucsm.edu.pe'),
+(2011980335, '52032769', 'Ingeniería Ambiental', 901531334, 'milagros.ponce24@ucsm.edu.pe'),
+(2013812133, '74132927', 'Ingeniería Biomédica', 948198779, 'fernando.pinto25@ucsm.edu.pe'),
+(2018950853, '71813806', 'Ingeniería Mecatrónica', 985780740, 'andrea.ponce26@ucsm.edu.pe'),
+(2015673282, '57784846', 'Ingeniería de Minas', 978166830, 'alvaro.huaman27@ucsm.edu.pe'),
+(2016499069, '76170399', 'Medicina Humana', 952239125, 'sofia.talavera28@ucsm.edu.pe'),
+(2014143608, '79776892', 'Enfermería', 984532675, 'manuel.benavente29@ucsm.edu.pe'),
+(2020603329, '68363756', 'Odontología', 915662869, 'lucia.arenas30@ucsm.edu.pe'),
+(2011485872, '60310416', 'Psicología', 997525844, 'carlos.malaga31@ucsm.edu.pe');
+
+INSERT INTO formato_investigador (codigo_ucsm, codigo_orcid, scopus_id, link_cti_vitae, resumen_academico, foto_perfil, codigo_ucsm_coordinador) VALUES
+(2018778636, '0020-0000-0005-5593', 57500000000, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/46887842', 'Docente investigador de Ingeniería de Sistemas con línea de trabajo en ingeniería de software.', 'perfil_2018778636.jpg', 1000234567),
+(2023202814, '0020-0000-0012-1247', 57500007919, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/70175825', 'Docente investigador de Ingeniería en Inteligencia Artificial con línea de trabajo en visión computacional.', 'perfil_2023202814.jpg', 1000123498),
+(2018406311, '0020-0000-0018-8900', NULL, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/59300639', 'Docente investigador de Ingeniería Industrial con línea de trabajo en logística.', 'perfil_2018406311.jpg', 1000123498),
+(2018622668, '0020-0000-0026-0351', NULL, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/47814689', 'Docente investigador de Ingeniería Civil con línea de trabajo en gestión de recursos hídricos.', 'perfil_2018622668.jpg', 1000234567),
+(2022235265, '0020-0000-0032-911X', 57500031676, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/43280798', 'Docente investigador de Ingeniería Ambiental con línea de trabajo en calidad del aire.', 'perfil_2022235265.jpg', 1000123498),
+(2021672136, '0020-0000-0038-4012', NULL, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/56844759', 'Docente investigador de Ingeniería Biomédica con línea de trabajo en dispositivos médicos.', 'perfil_2021672136.jpg', 1000123498),
+(2020726286, '0020-0000-0046-950X', 57500047514, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/70751123', 'Docente investigador de Ingeniería Mecatrónica con línea de trabajo en control automático.', 'perfil_2020726286.jpg', 1000234567),
+(2022203152, '0020-0000-0055-5029', NULL, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/69423951', 'Docente investigador de Ingeniería de Minas con línea de trabajo en minería sostenible.', 'perfil_2022203152.jpg', 1000123498),
+(2013883864, '0020-0000-0057-2574', 57500063352, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/67602603', 'Docente investigador de Medicina Humana con línea de trabajo en salud pública.', 'perfil_2013883864.jpg', 1000123498),
+(2014800949, '0020-0000-0063-7016', 57500071271, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/63974684', 'Docente investigador de Enfermería con línea de trabajo en gestión hospitalaria.', 'perfil_2014800949.jpg', 1000234567),
+(2020267899, '0020-0000-0067-8993', NULL, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/49082925', 'Docente investigador de Odontología con línea de trabajo en salud bucal.', 'perfil_2020267899.jpg', 1000123498),
+(2015777665, '0020-0000-0072-7986', 57500087109, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/63716460', 'Docente investigador de Psicología con línea de trabajo en psicología educativa.', 'perfil_2015777665.jpg', 1000123498),
+(2018317040, '0020-0000-0075-7093', 57500095028, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/69098911', 'Docente investigador de Derecho con línea de trabajo en derecho ambiental.', 'perfil_2018317040.jpg', 1000234567),
+(2018979734, '0020-0000-0080-6721', NULL, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/43233805', 'Docente investigador de Administración de Empresas con línea de trabajo en responsabilidad social.', 'perfil_2018979734.jpg', 1000123498),
+(2016658902, '0020-0000-0083-2057', 57500110866, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/67788893', 'Docente investigador de Contabilidad con línea de trabajo en tributación.', 'perfil_2016658902.jpg', 1000123498),
+(2017225939, '0020-0000-0084-9799', NULL, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/75383272', 'Docente investigador de Arquitectura con línea de trabajo en patrimonio urbano.', 'perfil_2017225939.jpg', 1000234567),
+(2022974045, '0020-0000-0087-2630', 57500126704, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/52244110', 'Docente investigador de Farmacia y Bioquímica con línea de trabajo en control de calidad de fármacos.', 'perfil_2022974045.jpg', 1000123498),
+(2020682729, '0020-0000-0096-085X', 57500134623, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/48899854', 'Docente investigador de Medicina Veterinaria y Zootecnia con línea de trabajo en zoonosis.', 'perfil_2020682729.jpg', 1000123498),
+(2014716676, '0020-0000-0099-2210', 57500142542, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/44289265', 'Docente investigador de Educación Inicial con línea de trabajo en didáctica.', 'perfil_2014716676.jpg', 1000234567),
+(2014228996, '0020-0000-0103-9560', 57500150461, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/46299518', 'Docente investigador de Comunicación Social con línea de trabajo en medios y sociedad.', 'perfil_2014228996.jpg', 1000123498),
+(2024225242, '0020-0000-0108-1435', 57500158380, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/65108571', 'Docente investigador de Ingeniería de Sistemas con línea de trabajo en ciberseguridad.', 'perfil_2024225242.jpg', 1000123498),
+(2022938696, '0020-0000-0113-9406', NULL, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/48208436', 'Docente investigador de Ingeniería en Inteligencia Artificial con línea de trabajo en aprendizaje profundo.', 'perfil_2022938696.jpg', 1000234567),
+(2015725950, '0020-0000-0115-9749', 57500174218, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/60283061', 'Docente investigador de Ingeniería Industrial con línea de trabajo en gestión de la calidad.', 'perfil_2015725950.jpg', 1000123498),
+(2020852108, '0020-0000-0118-1831', 57500182137, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/76328091', 'Docente investigador de Ingeniería Civil con línea de trabajo en materiales de construcción.', 'perfil_2020852108.jpg', 1000123498),
+(2011980335, '0020-0000-0127-0586', NULL, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/52032769', 'Docente investigador de Ingeniería Ambiental con línea de trabajo en cambio climático.', 'perfil_2011980335.jpg', 1000234567),
+(2013812133, '0020-0000-0131-3275', NULL, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/74132927', 'Docente investigador de Ingeniería Biomédica con línea de trabajo en dispositivos médicos.', 'perfil_2013812133.jpg', 1000123498),
+(2018950853, '0020-0000-0137-4713', 57500205894, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/71813806', 'Docente investigador de Ingeniería Mecatrónica con línea de trabajo en control automático.', 'perfil_2018950853.jpg', 1000123498),
+(2015673282, '0020-0000-0139-2962', NULL, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/57784846', 'Docente investigador de Ingeniería de Minas con línea de trabajo en minería sostenible.', 'perfil_2015673282.jpg', 1000234567),
+(2016499069, '0020-0000-0141-5909', NULL, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/76170399', 'Docente investigador de Medicina Humana con línea de trabajo en enfermedades crónicas.', 'perfil_2016499069.jpg', 1000123498),
+(2014143608, '0020-0000-0145-0093', 57500229651, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/79776892', 'Docente investigador de Enfermería con línea de trabajo en gestión hospitalaria.', 'perfil_2014143608.jpg', 1000123498),
+(2020603329, '0020-0000-0151-9230', 57500237570, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/68363756', 'Docente investigador de Odontología con línea de trabajo en salud bucal.', 'perfil_2020603329.jpg', 1000234567),
+(2011485872, '0020-0000-0157-8345', 57500245489, 'https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/60310416', 'Docente investigador de Psicología con línea de trabajo en psicología educativa.', 'perfil_2011485872.jpg', 1000123498);
+
+INSERT INTO formato_inv_ods (n_formato_inv, ods)
+SELECT fi.n_formato_inv, v.ods FROM (VALUES
+(2018778636, 'ODS 4: Educación de calidad'),
+(2018778636, 'ODS 8: Trabajo decente y crecimiento económico'),
+(2018778636, 'ODS 9: Industria, innovación e infraestructura'),
+(2023202814, 'ODS 4: Educación de calidad'),
+(2023202814, 'ODS 8: Trabajo decente y crecimiento económico'),
+(2018406311, 'ODS 4: Educación de calidad'),
+(2018406311, 'ODS 9: Industria, innovación e infraestructura'),
+(2018622668, 'ODS 11: Ciudades y comunidades sostenibles'),
+(2018622668, 'ODS 9: Industria, innovación e infraestructura'),
+(2022235265, 'ODS 13: Acción por el clima'),
+(2022235265, 'ODS 6: Agua limpia y saneamiento'),
+(2021672136, 'ODS 4: Educación de calidad'),
+(2021672136, 'ODS 8: Trabajo decente y crecimiento económico'),
+(2021672136, 'ODS 9: Industria, innovación e infraestructura'),
+(2020726286, 'ODS 4: Educación de calidad'),
+(2020726286, 'ODS 8: Trabajo decente y crecimiento económico'),
+(2020726286, 'ODS 9: Industria, innovación e infraestructura'),
+(2022203152, 'ODS 12: Producción y consumo responsables'),
+(2022203152, 'ODS 15: Vida de ecosistemas terrestres'),
+(2013883864, 'ODS 10: Reducción de las desigualdades'),
+(2013883864, 'ODS 3: Salud y bienestar'),
+(2014800949, 'ODS 3: Salud y bienestar'),
+(2014800949, 'ODS 5: Igualdad de género'),
+(2020267899, 'ODS 3: Salud y bienestar'),
+(2015777665, 'ODS 16: Paz, justicia e instituciones sólidas'),
+(2015777665, 'ODS 4: Educación de calidad'),
+(2018317040, 'ODS 5: Igualdad de género'),
+(2018979734, 'ODS 8: Trabajo decente y crecimiento económico'),
+(2016658902, 'ODS 16: Paz, justicia e instituciones sólidas'),
+(2016658902, 'ODS 8: Trabajo decente y crecimiento económico'),
+(2017225939, 'ODS 11: Ciudades y comunidades sostenibles'),
+(2022974045, 'ODS 12: Producción y consumo responsables'),
+(2022974045, 'ODS 3: Salud y bienestar'),
+(2020682729, 'ODS 2: Hambre cero'),
+(2014716676, 'ODS 10: Reducción de las desigualdades'),
+(2014228996, 'ODS 16: Paz, justicia e instituciones sólidas'),
+(2014228996, 'ODS 4: Educación de calidad'),
+(2024225242, 'ODS 4: Educación de calidad'),
+(2024225242, 'ODS 9: Industria, innovación e infraestructura'),
+(2022938696, 'ODS 4: Educación de calidad'),
+(2022938696, 'ODS 8: Trabajo decente y crecimiento económico'),
+(2022938696, 'ODS 9: Industria, innovación e infraestructura'),
+(2015725950, 'ODS 4: Educación de calidad'),
+(2015725950, 'ODS 9: Industria, innovación e infraestructura'),
+(2020852108, 'ODS 11: Ciudades y comunidades sostenibles'),
+(2011980335, 'ODS 13: Acción por el clima'),
+(2011980335, 'ODS 15: Vida de ecosistemas terrestres'),
+(2013812133, 'ODS 4: Educación de calidad'),
+(2013812133, 'ODS 9: Industria, innovación e infraestructura'),
+(2018950853, 'ODS 4: Educación de calidad'),
+(2018950853, 'ODS 9: Industria, innovación e infraestructura'),
+(2015673282, 'ODS 15: Vida de ecosistemas terrestres'),
+(2016499069, 'ODS 3: Salud y bienestar'),
+(2014143608, 'ODS 3: Salud y bienestar'),
+(2014143608, 'ODS 5: Igualdad de género'),
+(2020603329, 'ODS 3: Salud y bienestar'),
+(2011485872, 'ODS 3: Salud y bienestar')
+) AS v(codigo, ods) JOIN formato_investigador fi ON fi.codigo_ucsm = v.codigo;
+
+INSERT INTO formato_inv_intereses (n_formato_inv, intereses_invest)
+SELECT fi.n_formato_inv, v.interes FROM (VALUES
+(2018778636, 'Ingeniería de software'),
+(2023202814, 'Visión computacional'),
+(2023202814, 'Aprendizaje profundo'),
+(2018406311, 'Logística'),
+(2018406311, 'Gestión de la calidad'),
+(2018622668, 'Gestión de recursos hídricos'),
+(2018622668, 'Materiales de construcción'),
+(2022235265, 'Calidad del aire'),
+(2021672136, 'Dispositivos médicos'),
+(2021672136, 'Procesamiento de señales biomédicas'),
+(2020726286, 'Control automático'),
+(2020726286, 'Robótica'),
+(2022203152, 'Minería sostenible'),
+(2013883864, 'Salud pública'),
+(2014800949, 'Gestión hospitalaria'),
+(2014800949, 'Cuidado del adulto mayor'),
+(2020267899, 'Salud bucal'),
+(2020267899, 'Ortodoncia'),
+(2015777665, 'Psicología educativa'),
+(2018317040, 'Derecho ambiental'),
+(2018979734, 'Responsabilidad social'),
+(2018979734, 'Emprendimiento'),
+(2018979734, 'Gestión estratégica'),
+(2016658902, 'Tributación'),
+(2016658902, 'Finanzas corporativas'),
+(2017225939, 'Patrimonio urbano'),
+(2022974045, 'Control de calidad de fármacos'),
+(2022974045, 'Farmacología'),
+(2022974045, 'Plantas medicinales'),
+(2020682729, 'Zoonosis'),
+(2020682729, 'Sanidad animal'),
+(2014716676, 'Didáctica'),
+(2014716676, 'Desarrollo infantil'),
+(2014228996, 'Medios y sociedad'),
+(2014228996, 'Comunicación digital'),
+(2024225242, 'Ciberseguridad'),
+(2022938696, 'Aprendizaje profundo'),
+(2022938696, 'Procesamiento de lenguaje natural'),
+(2022938696, 'Visión computacional'),
+(2015725950, 'Gestión de la calidad'),
+(2015725950, 'Lean manufacturing'),
+(2020852108, 'Materiales de construcción'),
+(2020852108, 'Gestión de recursos hídricos'),
+(2020852108, 'Ingeniería sísmica'),
+(2011980335, 'Cambio climático'),
+(2013812133, 'Dispositivos médicos'),
+(2013812133, 'Procesamiento de señales biomédicas'),
+(2018950853, 'Control automático'),
+(2018950853, 'Sistemas embebidos'),
+(2018950853, 'Robótica'),
+(2015673282, 'Minería sostenible'),
+(2016499069, 'Enfermedades crónicas'),
+(2014143608, 'Gestión hospitalaria'),
+(2020603329, 'Salud bucal'),
+(2020603329, 'Ortodoncia'),
+(2020603329, 'Biomateriales dentales'),
+(2011485872, 'Psicología educativa'),
+(2011485872, 'Salud mental')
+) AS v(codigo, interes) JOIN formato_investigador fi ON fi.codigo_ucsm = v.codigo;
+
+INSERT INTO patente (n_patente, titulo_patente, editorial, fecha_registro, cip, pais) VALUES
+('PE-400000', 'Sistema de monitoreo sísmico de bajo costo para viviendas', 'INDECOPI', '2018-10-27', 'G01V 1/00', 'Perú'),
+('PE-401373', 'Prótesis de mano impresa en 3D con control mioeléctrico', 'INDECOPI', '2023-04-28', 'A61F 2/58', 'Perú'),
+('PE-402746', 'Biofiltro para la remoción de arsénico en agua de consumo', 'INDECOPI', '2018-12-05', 'C02F 1/28', 'Perú'),
+('PE-404119', 'Método de secado solar de granos andinos', 'INDECOPI', '2026-06-13', 'F26B 3/28', 'Perú'),
+('PE-405492', 'Dispositivo portátil para detección temprana de anemia', 'INDECOPI', '2021-08-14', 'A61B 5/145', 'Perú'),
+('PE-406865', 'Ladrillo ecológico a base de residuos de construcción', 'INDECOPI', '2023-03-12', 'C04B 18/16', 'Perú'),
+('PE-408238', 'Algoritmo de reconocimiento de plagas en cultivos mediante visión artificial', 'INDECOPI', '2020-05-21', 'G06V 20/10', 'Perú'),
+('PE-409611', 'Kit de diagnóstico rápido para sarna en camélidos', 'INDECOPI', '2021-01-01', 'G01N 33/569', 'Perú'),
+('PE-410984', 'Sistema de alerta temprana de heladas para zonas altoandinas', 'INDECOPI', '2019-08-19', 'G08B 21/10', 'Perú'),
+('US-412357', 'Recubrimiento dental bioactivo con nanopartículas', 'USPTO', '2026-08-30', 'A61K 6/80', 'Estados Unidos'),
+('CL-413730', 'Brazo robótico para clasificación de residuos sólidos', 'INAPI', '2025-02-06', 'B25J 9/16', 'Chile'),
+('MX-415103', 'Formulación cicatrizante a base de muña y sangre de grado', 'IMPI', '2019-01-25', 'A61K 36/53', 'México'),
+('CO-416476', 'Plataforma IoT para gestión eficiente del riego por aspersión', 'SIC', '2022-06-26', 'A01G 25/16', 'Colombia'),
+('PE-417849', 'Equipo de purificación de aire con filtros de carbón de queñua', 'INDECOPI', '2024-06-29', 'B01D 53/04', 'Perú');
+
+INSERT INTO formato_patente (n_patente, codigo_ucsm_coordinador) VALUES
+('PE-400000', 1000234567),
+('PE-401373', 1000123498),
+('PE-402746', 1000234567),
+('PE-404119', 1000123498),
+('PE-405492', 1000234567),
+('PE-406865', 1000123498),
+('PE-408238', 1000234567),
+('PE-409611', 1000123498),
+('PE-410984', 1000234567),
+('US-412357', 1000123498),
+('CL-413730', 1000234567),
+('MX-415103', 1000123498),
+('CO-416476', 1000234567),
+('PE-417849', 1000123498);
+
+INSERT INTO formato_patente_investigador (n_formato_pat, n_formato_inv)
+SELECT fp.n_formato_pat, fi.n_formato_inv FROM (VALUES
+('PE-400000', 2022974045),
+('PE-400000', 2014228996),
+('PE-401373', 2022203152),
+('PE-401373', 2017225939),
+('PE-402746', 2021672136),
+('PE-404119', 2016658902),
+('PE-404119', 2020267899),
+('PE-404119', 2024225242),
+('PE-405492', 2011485872),
+('PE-405492', 2013812133),
+('PE-405492', 2024225242),
+('PE-406865', 2015725950),
+('PE-408238', 2016499069),
+('PE-409611', 2022203152),
+('PE-409611', 2024225242),
+('PE-410984', 2020682729),
+('PE-410984', 2016658902),
+('PE-410984', 2022938696),
+('US-412357', 2020682729),
+('CL-413730', 2013812133),
+('CL-413730', 2023202814),
+('MX-415103', 2011485872),
+('MX-415103', 2018979734),
+('MX-415103', 2015673282),
+('CO-416476', 2015777665),
+('CO-416476', 2018778636),
+('CO-416476', 2020682729),
+('PE-417849', 2018950853),
+('PE-417849', 2020603329),
+('PE-417849', 2022938696)
+) AS v(n_patente, codigo)
+JOIN formato_patente fp ON fp.n_patente = v.n_patente
+JOIN formato_investigador fi ON fi.codigo_ucsm = v.codigo;
+
+INSERT INTO formato_paten_inventores (n_formato_pat, inventores)
+SELECT fp.n_formato_pat, v.inventor FROM (VALUES
+('PE-400000', 'Núñez Benavente, Mariela'),
+('PE-400000', 'Paredes Quispe, Renzo'),
+('PE-401373', 'Linares Manrique, Manuel'),
+('PE-401373', 'Cáceres Pinto, Manuel'),
+('PE-402746', 'Rivera Pinto, Andrés'),
+('PE-404119', 'Valdivia Zegarra, Daniela'),
+('PE-404119', 'Huamán Núñez, Sofía'),
+('PE-404119', 'Núñez Rivera, Andrea'),
+('PE-405492', 'Málaga Cornejo, Carlos Alberto'),
+('PE-405492', 'Pinto Mamani, Fernando'),
+('PE-405492', 'Núñez Rivera, Andrea'),
+('PE-406865', 'Chávez Cáceres, Carmen Rosa'),
+('PE-408238', 'Talavera Mamani, Sofía'),
+('PE-409611', 'Linares Manrique, Manuel'),
+('PE-409611', 'Núñez Rivera, Andrea'),
+('PE-410984', 'Talavera Zegarra, Juan Carlos'),
+('PE-410984', 'Valdivia Zegarra, Daniela'),
+('PE-410984', 'Delgado Ramos, Manuel'),
+('US-412357', 'Talavera Zegarra, Juan Carlos'),
+('CL-413730', 'Pinto Mamani, Fernando'),
+('CL-413730', 'Flores Delgado, Luis Miguel'),
+('MX-415103', 'Málaga Cornejo, Carlos Alberto'),
+('MX-415103', 'Mamani Ponce, Álvaro'),
+('MX-415103', 'Huamán Delgado, Álvaro'),
+('CO-416476', 'Mamani Málaga, Luis Miguel'),
+('CO-416476', 'Salas Cáceres, Gabriela'),
+('CO-416476', 'Talavera Zegarra, Juan Carlos'),
+('PE-417849', 'Ponce Linares, Andrea'),
+('PE-417849', 'Arenas Herrera, Lucía'),
+('PE-417849', 'Delgado Ramos, Manuel')
+) AS v(n_patente, inventor) JOIN formato_patente fp ON fp.n_patente = v.n_patente;
+
+INSERT INTO formato_paten_ocde (n_formato_pat, campo_ocde, objetivos_ocde)
+SELECT fp.n_formato_pat, v.campo, v.objetivo FROM (VALUES
+('PE-400000', 'Ciencias agrícolas', 'Producción y tecnología agrícola'),
+('PE-401373', 'Ciencias naturales', 'Medio ambiente'),
+('PE-401373', 'Ciencias agrícolas', 'Producción y tecnología agrícola'),
+('PE-402746', 'Ciencias agrícolas', 'Producción y tecnología agrícola'),
+('PE-402746', 'Ingeniería y tecnología', 'Tecnologías de la información y comunicación'),
+('PE-404119', 'Ingeniería y tecnología', 'Tecnologías de la información y comunicación'),
+('PE-404119', 'Ciencias agrícolas', 'Producción y tecnología agrícola'),
+('PE-405492', 'Ciencias médicas y de la salud', 'Protección y mejora de la salud humana'),
+('PE-406865', 'Ciencias naturales', 'Medio ambiente'),
+('PE-406865', 'Ingeniería y tecnología', 'Tecnologías de la información y comunicación'),
+('PE-408238', 'Ciencias naturales', 'Medio ambiente'),
+('PE-409611', 'Ciencias naturales', 'Medio ambiente'),
+('PE-409611', 'Ciencias agrícolas', 'Producción y tecnología agrícola'),
+('PE-410984', 'Ingeniería y tecnología', 'Tecnologías de la información y comunicación'),
+('US-412357', 'Ingeniería y tecnología', 'Tecnologías de la información y comunicación'),
+('US-412357', 'Ciencias naturales', 'Medio ambiente'),
+('CL-413730', 'Ciencias naturales', 'Medio ambiente'),
+('CL-413730', 'Ciencias agrícolas', 'Producción y tecnología agrícola'),
+('MX-415103', 'Ciencias agrícolas', 'Producción y tecnología agrícola'),
+('MX-415103', 'Ingeniería y tecnología', 'Producción y tecnología industrial'),
+('CO-416476', 'Ciencias médicas y de la salud', 'Protección y mejora de la salud humana'),
+('CO-416476', 'Ciencias agrícolas', 'Producción y tecnología agrícola'),
+('PE-417849', 'Ingeniería y tecnología', 'Producción y tecnología industrial')
+) AS v(n_patente, campo, objetivo) JOIN formato_patente fp ON fp.n_patente = v.n_patente;
+
+INSERT INTO reporte (dia, mes, anio, codigo_ucsm_coordinador) VALUES
+(31, 1, 2025, 1000123498),
+(28, 2, 2025, 1000234567),
+(31, 3, 2025, 1000123498),
+(30, 4, 2025, 1000234567),
+(31, 5, 2025, 1000123498),
+(30, 6, 2025, 1000234567),
+(31, 7, 2025, 1000123498),
+(31, 8, 2025, 1000234567),
+(30, 9, 2025, 1000123498),
+(31, 10, 2025, 1000234567),
+(30, 11, 2025, 1000123498),
+(31, 12, 2025, 1000234567),
+(30, 4, 2026, 1000234567),
+(31, 5, 2026, 1000123498),
+(30, 6, 2026, 1000234567),
+(31, 7, 2026, 1000123498),
+(31, 8, 2026, 1000234567),
+(30, 9, 2026, 1000123498),
+(31, 10, 2026, 1000234567);
+
+INSERT INTO historico (uuid, title, publication_year, synced_at, type, volumen, create_date, journal_number, create_by, version, number_of_pages, modified_by, abstract, total_number_of_contributors, peer_review, pages, type_discriminator, bibliographical_note, visibility, modified_date, submission_year, system_name, portal_url, sub_title, language, category, dia_reporte, mes_reporte, anio_reporte, codigo_ucsm_coordinador) VALUES
+('497996b7-4c96-52e4-942a-136a548a6bd0', 'Análisis comparativo de estrategias de ingeniería de software', 2023, '2025-11-30 09:00:00', 'Article', 25, '2023-11-12', '9', 'sync_user', '04abba2f396b01df19a25c3c272a5c9e84c76de1', 23, 'root', 'Estudio sobre ingeniería de software con resultados aplicables al contexto regional.', 1, TRUE, '41-63', 'ContributionToJournal', 'Publisher Copyright: © 2023 MDPI', 'Restricted', '2025-11-30', 2023, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/100', 'Resultados preliminares', 'Spanish', 'Research', 30, 11, 2025, 1000234567),
+('1af764bb-2ec4-51f3-8fe4-73f3fb836b2f', 'Un enfoque basado en datos para aprendizaje profundo', 2022, '2026-06-30 09:00:00', 'Article', 18, '2022-09-22', '2', 'sync_user', 'c8d74fec790edc3e22eb28f1f3e3d172b23d2fc9', 23, 'root', 'Estudio sobre aprendizaje profundo con resultados aplicables al contexto regional.', 3, TRUE, '302-324', 'ContributionToJournal', 'Publisher Copyright: © 2022 Taylor & Francis', 'FREE', '2026-06-30', 2022, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/101', NULL, 'English', 'Research', 30, 6, 2026, 1000123498),
+('faf986d8-a752-5707-9399-775fd3b27034', 'Impacto de logística en comunidades altoandinas', 2021, '2026-09-30 09:00:00', 'Article', 5, '2021-05-16', '11', 'sync_user', '40e8b2fe96b136aff8b11cb785582ea1bd04003b', 14, 'root', 'Estudio sobre logística con resultados aplicables al contexto regional.', 4, TRUE, '168-181', 'ContributionToJournal', 'Publisher Copyright: © 2021 Wiley', 'FREE', '2026-09-30', 2021, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/102', NULL, 'English', 'Research', 30, 9, 2026, 1000234567),
+('4569c6cd-4b89-5e0d-b7e4-e52983d27605', 'Evaluación de ingeniería sísmica en la región sur del Perú', 2024, '2025-09-30 09:00:00', 'Conference paper', NULL, '2024-04-19', NULL, 'sync_user', '39a3a1b90d9c201e9efdad414c85eeead3f6e7da', 19, 'root', 'Estudio sobre ingeniería sísmica con resultados aplicables al contexto regional.', 3, TRUE, '28-46', 'ContributionToConference', 'Publisher Copyright: © 2024 IEEE', 'FREE', '2025-09-30', 2024, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/103', 'Resultados preliminares', 'English', 'Review', 30, 9, 2025, 1000123498),
+('84b7e3c9-57fe-5358-ada8-0c7c77b0b2c9', 'Análisis comparativo de estrategias de cambio climático', 2023, '2026-07-31 09:00:00', 'Book', NULL, '2023-02-18', NULL, 'sync_user', '4fcdd3a6dc162761d8b9cec8d0e1f0f3d603461d', 14, 'root', 'Estudio sobre cambio climático con resultados aplicables al contexto regional.', 5, TRUE, '90-103', 'Book', 'Publisher Copyright: © 2023 Springer', 'Restricted', '2026-07-31', 2023, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/104', NULL, 'English', 'Research', 31, 7, 2026, 1000234567),
+('377296b1-1063-5a80-8d7c-72fc82cff6ec', 'Biomecánica: estado del arte y desafíos', 2020, '2025-07-31 09:00:00', 'Conference paper', NULL, '2020-03-17', NULL, 'sync_user', '6fc3b41c476ff6fd222268e4fbc07fb1add2f3d9', 14, 'root', 'Estudio sobre biomecánica con resultados aplicables al contexto regional.', 2, TRUE, '109-122', 'ContributionToConference', 'Publisher Copyright: © 2020 MDPI', 'FREE', '2025-07-31', 2020, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/105', NULL, 'English', 'Research', 31, 7, 2025, 1000123498),
+('f0d96242-d888-5067-a229-25c4933fe3c7', 'Modelo experimental de robótica aplicado a contextos universitarios', 2024, '2025-12-31 09:00:00', 'Book', NULL, '2024-12-05', NULL, 'sync_user', '54a762d95417c22950d286f83ad2a119d54b95fc', 24, 'root', 'Estudio sobre robótica con resultados aplicables al contexto regional.', 5, TRUE, '68-91', 'Book', 'Publisher Copyright: © 2024 Springer', 'FREE', '2025-12-31', 2024, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/106', 'Resultados preliminares', 'Spanish', 'Review', 31, 12, 2025, 1000234567),
+('2f47ba36-b502-5ec6-9653-857fc5902fee', 'Minería sostenible: estado del arte y desafíos', 2023, '2025-10-31 09:00:00', 'Article', 7, '2023-03-15', '3', 'sync_user', '724b25485878b5b75840fb2bf4448cf161358338', 11, 'root', 'Estudio sobre minería sostenible con resultados aplicables al contexto regional.', 1, TRUE, '87-97', 'ContributionToJournal', 'Publisher Copyright: © 2023 IEEE', 'FREE', '2025-10-31', 2023, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/107', NULL, 'English', 'Research', 31, 10, 2025, 1000123498),
+('79096706-f076-5cfe-8324-9b2acf5fdf6c', 'Análisis comparativo de estrategias de epidemiología', 2026, '2026-09-30 09:00:00', 'Chapter', NULL, '2026-08-22', NULL, 'sync_user', 'aaedb9f19bbe17f82a66fe487f09104f54e457c1', 19, 'root', 'Estudio sobre epidemiología con resultados aplicables al contexto regional.', 2, TRUE, '383-401', 'ContributionToBookAnthology', 'Publisher Copyright: © 2026 Elsevier', 'Restricted', '2026-09-30', 2026, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/108', NULL, 'English', 'Review', 30, 9, 2026, 1000234567),
+('f29e58ba-bd0a-5583-88c3-4e16a1472ab4', 'Un enfoque basado en datos para salud comunitaria', 2019, '2026-07-31 09:00:00', 'Conference paper', NULL, '2019-12-27', NULL, 'sync_user', 'a0b55238b60cc5e526850fc12abd2812c8268521', 16, 'root', 'Estudio sobre salud comunitaria con resultados aplicables al contexto regional.', 1, TRUE, '132-147', 'ContributionToConference', 'Publisher Copyright: © 2019 Taylor & Francis', 'FREE', '2026-07-31', 2019, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/109', 'Resultados preliminares', 'English', 'Research', 31, 7, 2026, 1000123498),
+('9292d414-bd67-5857-aabd-dc5fb3882d14', 'Modelo experimental de salud bucal aplicado a contextos universitarios', 2020, '2026-05-31 09:00:00', 'Article', 55, '2020-04-12', '12', 'sync_user', '80366646352dae98b57aff00033886f9fcdfc090', 23, 'root', 'Estudio sobre salud bucal con resultados aplicables al contexto regional.', 3, TRUE, '82-104', 'ContributionToJournal', 'Publisher Copyright: © 2020 Wiley', 'FREE', '2026-05-31', 2020, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/110', NULL, 'English', 'Research', 31, 5, 2026, 1000234567),
+('c812175b-1b7b-593d-9bff-099978c05982', 'Psicología educativa: estado del arte y desafíos', 2022, '2025-10-31 09:00:00', 'Article', 80, '2022-02-25', '12', 'sync_user', '3fd3a88a8996e635ce16cb2982ae7e83357c5afe', 17, 'root', 'Estudio sobre psicología educativa con resultados aplicables al contexto regional.', 5, TRUE, '41-57', 'ContributionToJournal', 'Publisher Copyright: © 2022 Springer', 'FREE', '2025-10-31', 2022, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/111', NULL, 'Spanish', 'Research', 31, 10, 2025, 1000123498),
+('36c994e1-f729-5acd-909c-be594686e3f1', 'Un enfoque basado en datos para derecho ambiental', 2025, '2025-07-31 09:00:00', 'Article', 2, '2025-05-24', '8', 'sync_user', '003eac461dfca6afe39de98652a10e5cda6dabad', 18, 'root', 'Estudio sobre derecho ambiental con resultados aplicables al contexto regional.', 4, TRUE, '187-204', 'ContributionToJournal', 'Publisher Copyright: © 2025 IEEE', 'Restricted', '2025-07-31', 2025, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/112', 'Resultados preliminares', 'Spanish', 'Research', 31, 7, 2025, 1000234567),
+('fee4517c-4b26-5e68-9081-cd05860f8e14', 'Revisión sistemática sobre gestión estratégica', 2026, '2025-05-31 09:00:00', 'Article', 7, '2026-07-20', '12', 'sync_user', '836d17fb4acda3c0d9bdc37302ea55ad04d46ff4', 24, 'root', 'Estudio sobre gestión estratégica con resultados aplicables al contexto regional.', 1, FALSE, '325-348', 'ContributionToJournal', 'Publisher Copyright: © 2026 Wiley', 'FREE', '2025-05-31', 2026, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/113', NULL, 'English', 'Thesis', 31, 5, 2025, 1000123498),
+('056038b9-8cb7-59a5-b1a7-fb2aa5acba59', 'Análisis comparativo de estrategias de tributación', 2026, '2026-06-30 09:00:00', 'Article', 73, '2026-01-03', '2', 'sync_user', '84c5cfafeab8b87cafdf91a5fe4798ce74bdfe7c', 20, 'root', 'Estudio sobre tributación con resultados aplicables al contexto regional.', 4, TRUE, '271-290', 'ContributionToJournal', 'Publisher Copyright: © 2026 MDPI', 'FREE', '2026-06-30', 2026, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/114', NULL, 'English', 'Research', 30, 6, 2026, 1000234567),
+('246f5999-3b1a-549a-8cd1-9998ddd448d7', 'Vivienda social: estado del arte y desafíos', 2026, '2026-07-31 09:00:00', 'Chapter', NULL, '2026-09-28', NULL, 'sync_user', '4b7400928c425eef8cc25d6d9aecb407d0c5399c', 6, 'root', 'Estudio sobre vivienda social con resultados aplicables al contexto regional.', 4, TRUE, '131-136', 'ContributionToBookAnthology', 'Publisher Copyright: © 2026 Springer', 'FREE', '2026-07-31', 2026, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/115', 'Resultados preliminares', 'English', 'Research', 31, 7, 2026, 1000123498),
+('8309f9d4-941e-55b6-95b3-5a07e78d926f', 'Evaluación de control de calidad de fármacos en la región sur del Perú', 2020, '2025-11-30 09:00:00', 'Chapter', NULL, '2020-04-13', NULL, 'sync_user', '3cf7f2ad72dff8a24755496c7598261761094168', 22, 'root', 'Estudio sobre control de calidad de fármacos con resultados aplicables al contexto regional.', 4, TRUE, '123-144', 'ContributionToBookAnthology', 'Publisher Copyright: © 2020 Taylor & Francis', 'Restricted', '2025-11-30', 2020, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/116', NULL, 'English', 'Review', 30, 11, 2025, 1000234567),
+('e947bb86-bdad-53dc-bd44-1009e4edba7a', 'Evaluación de producción de camélidos en la región sur del Perú', 2022, '2025-06-30 09:00:00', 'Conference paper', NULL, '2022-09-01', NULL, 'sync_user', '75e4c0afc34217352b350a1b829802bf199dc8a1', 12, 'root', 'Estudio sobre producción de camélidos con resultados aplicables al contexto regional.', 2, TRUE, '256-267', 'ContributionToConference', 'Publisher Copyright: © 2022 Wiley', 'FREE', '2025-06-30', 2022, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/117', NULL, 'English', 'Research', 30, 6, 2025, 1000123498),
+('04d6d30c-9e3f-5c19-b738-9ae1fa55299a', 'Evaluación de educación inclusiva en la región sur del Perú', 2026, '2025-05-31 09:00:00', 'Conference paper', NULL, '2026-01-12', NULL, 'sync_user', '68262e4405114186a44f17ef84d1848e6eb6a3ba', 22, 'root', 'Estudio sobre educación inclusiva con resultados aplicables al contexto regional.', 4, TRUE, '309-330', 'ContributionToConference', 'Publisher Copyright: © 2026 MDPI', 'FREE', '2025-05-31', 2026, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/118', 'Resultados preliminares', 'Spanish', 'Review', 31, 5, 2025, 1000234567),
+('0254529b-2c33-5ab1-b7a8-3ff98142f249', 'Evaluación de medios y sociedad en la región sur del Perú', 2024, '2025-07-31 09:00:00', 'Chapter', NULL, '2024-02-26', NULL, 'sync_user', '7f13bdf949f13a7cfe122ee12f3d624ef59603f6', 18, 'root', 'Estudio sobre medios y sociedad con resultados aplicables al contexto regional.', 3, TRUE, '213-230', 'ContributionToBookAnthology', 'Publisher Copyright: © 2024 SciELO', 'FREE', '2025-07-31', 2024, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/119', NULL, 'English', 'Review', 31, 7, 2025, 1000123498),
+('f593c2be-1a11-58f0-a247-7bc3365c6189', 'Un enfoque basado en datos para ingeniería de software', 2023, '2025-06-30 09:00:00', 'Article', 15, '2023-04-23', '8', 'sync_user', 'c6cf0ec8f722043645945e3dd4eb57048ab710d7', 23, 'root', 'Estudio sobre ingeniería de software con resultados aplicables al contexto regional.', 4, FALSE, '324-346', 'ContributionToJournal', 'Publisher Copyright: © 2023 Elsevier', 'Restricted', '2025-06-30', 2023, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/120', NULL, 'English', 'Thesis', 30, 6, 2025, 1000234567),
+('248298ec-f01f-5127-8f21-eeb8d90aeba7', 'Análisis comparativo de estrategias de visión computacional', 2019, '2025-07-31 09:00:00', 'Conference paper', NULL, '2019-05-07', NULL, 'sync_user', 'a3ba36fbeaedd8492feeadffed6e32c7cabac8d4', 15, 'root', 'Estudio sobre visión computacional con resultados aplicables al contexto regional.', 3, TRUE, '4-18', 'ContributionToConference', 'Publisher Copyright: © 2019 Elsevier', 'FREE', '2025-07-31', 2019, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/121', 'Resultados preliminares', 'English', 'Research', 31, 7, 2025, 1000123498),
+('124f1c6e-d448-5c45-8f93-4e0dc83d7495', 'Revisión sistemática sobre logística', 2021, '2026-09-30 09:00:00', 'Article', 32, '2021-09-13', '1', 'sync_user', '7d6515d85c01b7dce7c5040eea0639589d358585', 8, 'root', 'Estudio sobre logística con resultados aplicables al contexto regional.', 5, TRUE, '238-245', 'ContributionToJournal', 'Publisher Copyright: © 2021 Springer', 'FREE', '2026-09-30', 2021, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/122', NULL, 'Spanish', 'Research', 30, 9, 2026, 1000234567),
+('edd5aa9e-e294-50ed-987d-46422146358e', 'Impacto de materiales de construcción en comunidades altoandinas', 2020, '2026-06-30 09:00:00', 'Conference paper', NULL, '2020-06-13', NULL, 'sync_user', '4777f3a5379c1f15c54a6e71979c889ea57dff2e', 11, 'root', 'Estudio sobre materiales de construcción con resultados aplicables al contexto regional.', 3, TRUE, '143-153', 'ContributionToConference', 'Publisher Copyright: © 2020 MDPI', 'FREE', '2026-06-30', 2020, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/123', NULL, 'English', 'Research', 30, 6, 2026, 1000123498),
+('fb7d4efe-21ea-5b5e-9bf1-a1d1402ddc26', 'Evaluación de calidad del aire en la región sur del Perú', 2020, '2025-05-31 09:00:00', 'Article', 64, '2020-03-22', '9', 'sync_user', '1468645811723a1d4bd39d9d18409cef9c9e26d4', 11, 'root', 'Estudio sobre calidad del aire con resultados aplicables al contexto regional.', 3, TRUE, '166-176', 'ContributionToJournal', 'Publisher Copyright: © 2020 Taylor & Francis', 'Restricted', '2025-05-31', 2020, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/124', 'Resultados preliminares', 'Spanish', 'Research', 31, 5, 2025, 1000234567),
+('a2086d85-6f92-5351-94b8-794238b864cb', 'Evaluación de dispositivos médicos en la región sur del Perú', 2020, '2026-07-31 09:00:00', 'Conference paper', NULL, '2020-10-01', NULL, 'sync_user', '0169fafca51ef2326c6d62d1964549c78e5506bb', 14, 'root', 'Estudio sobre dispositivos médicos con resultados aplicables al contexto regional.', 5, TRUE, '333-346', 'ContributionToConference', 'Publisher Copyright: © 2020 Taylor & Francis', 'FREE', '2026-07-31', 2020, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/125', NULL, 'Portuguese', 'Research', 31, 7, 2026, 1000123498),
+('11fd31da-21a7-55ed-8cbd-8f0c7efb974e', 'Impacto de robótica en comunidades altoandinas', 2023, '2026-10-31 09:00:00', 'Article', 13, '2023-03-23', '4', 'sync_user', '066a1ad2cab7670d004569098cc96111a695c3bb', 24, 'root', 'Estudio sobre robótica con resultados aplicables al contexto regional.', 4, TRUE, '235-258', 'ContributionToJournal', 'Publisher Copyright: © 2023 Taylor & Francis', 'FREE', '2026-10-31', 2023, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/126', NULL, 'Portuguese', 'Research', 31, 10, 2026, 1000234567),
+('379630ae-89f3-5ddc-9d4f-bdd307319bcd', 'Modelo experimental de seguridad minera aplicado a contextos universitarios', 2026, '2025-04-30 09:00:00', 'Conference paper', NULL, '2026-07-09', NULL, 'sync_user', '0514d1affbabe3c422df306a80140a7e0f4b4828', 20, 'root', 'Estudio sobre seguridad minera con resultados aplicables al contexto regional.', 1, TRUE, '11-30', 'ContributionToConference', 'Publisher Copyright: © 2026 Springer', 'FREE', '2025-04-30', 2026, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/127', 'Resultados preliminares', 'English', 'Research', 30, 4, 2025, 1000123498),
+('553e9421-e9c7-56a9-98b3-0097b968795e', 'Impacto de salud pública en comunidades altoandinas', 2019, '2026-06-30 09:00:00', 'Book', NULL, '2019-08-25', NULL, 'sync_user', 'eb50ad638db1cda271802f4679912ae38b3f3f27', 15, 'root', 'Estudio sobre salud pública con resultados aplicables al contexto regional.', 4, TRUE, '228-242', 'Book', 'Publisher Copyright: © 2019 IEEE', 'Restricted', '2026-06-30', 2019, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/128', NULL, 'Spanish', 'Review', 30, 6, 2026, 1000234567),
+('9d72ed21-7119-56c0-bd85-7cec3db85d9e', 'Análisis comparativo de estrategias de salud comunitaria', 2025, '2026-07-31 09:00:00', 'Chapter', NULL, '2025-04-23', NULL, 'sync_user', '606f2847bfe7e56e391df5e6967f553a7dd11225', 18, 'root', 'Estudio sobre salud comunitaria con resultados aplicables al contexto regional.', 3, TRUE, '151-168', 'ContributionToBookAnthology', 'Publisher Copyright: © 2025 Springer', 'FREE', '2026-07-31', 2025, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/129', NULL, 'English', 'Research', 31, 7, 2026, 1000123498),
+('89526843-78da-5c4f-a3b1-09c58bf3d47c', 'Análisis comparativo de estrategias de ortodoncia', 2021, '2025-04-30 09:00:00', 'Article', 70, '2021-04-20', '9', 'sync_user', '97b9960ad23e54df44a3ac23eb6c4a203cfe8fe1', 15, 'root', 'Estudio sobre ortodoncia con resultados aplicables al contexto regional.', 2, TRUE, '282-296', 'ContributionToJournal', 'Publisher Copyright: © 2021 Wiley', 'FREE', '2025-04-30', 2021, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/130', 'Resultados preliminares', 'Spanish', 'Research', 30, 4, 2025, 1000234567),
+('96a1ee35-5f8f-52c0-96e4-3e54f47fa2bb', 'Revisión sistemática sobre neuropsicología', 2026, '2025-08-31 09:00:00', 'Article', 17, '2026-03-28', '8', 'sync_user', 'b44eec7d98cead83c48a5261688146e7d7f35981', 24, 'root', 'Estudio sobre neuropsicología con resultados aplicables al contexto regional.', 3, TRUE, '221-244', 'ContributionToJournal', 'Publisher Copyright: © 2026 IEEE', 'FREE', '2025-08-31', 2026, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/131', NULL, 'Spanish', 'Review', 31, 8, 2025, 1000123498),
+('3b89701d-42b9-5d54-bf4e-758764d999ee', 'Impacto de bases de datos en comunidades altoandinas', 2019, '2025-10-31 09:00:00', 'Book', NULL, '2019-11-18', NULL, 'sync_user', '224e41f513fea5aa157ae1f02aba4951184cd54f', 15, 'root', 'Estudio sobre bases de datos con resultados aplicables al contexto regional.', 5, TRUE, '262-276', 'Book', 'Publisher Copyright: © 2019 Taylor & Francis', 'Restricted', '2025-10-31', 2019, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/132', NULL, 'English', 'Research', 31, 10, 2025, 1000234567),
+('95f898f1-e3ff-577d-862c-33a1262ea2ee', 'Visión computacional: estado del arte y desafíos', 2025, '2026-08-31 09:00:00', 'Article', 75, '2025-06-28', '7', 'sync_user', 'b4261b0a80ce9b54bde7925a134dec87b9b171b6', 23, 'root', 'Estudio sobre visión computacional con resultados aplicables al contexto regional.', 1, TRUE, '125-147', 'ContributionToJournal', 'Publisher Copyright: © 2025 MDPI', 'FREE', '2026-08-31', 2025, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/133', 'Resultados preliminares', 'English', 'Research', 31, 8, 2026, 1000123498),
+('26c5abd9-b5b5-5564-a833-572990adff0c', 'Gestión de la calidad: estado del arte y desafíos', 2020, '2025-08-31 09:00:00', 'Article', 48, '2020-03-14', '1', 'sync_user', 'b6797c1dbb3e1533cecc45ad763981997b40d137', 12, 'root', 'Estudio sobre gestión de la calidad con resultados aplicables al contexto regional.', 1, TRUE, '263-274', 'ContributionToJournal', 'Publisher Copyright: © 2020 SciELO', 'FREE', '2025-08-31', 2020, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/134', NULL, 'English', 'Research', 31, 8, 2025, 1000234567),
+('16e96edd-a55e-5971-a253-8c3b5b0107a4', 'Evaluación de ingeniería sísmica en la región sur del Perú (36)', 2022, '2026-04-30 09:00:00', 'Article', 40, '2022-02-14', '1', 'sync_user', 'e04270afa2416b7d9c051859fac525315c38a3b5', 16, 'root', 'Estudio sobre ingeniería sísmica con resultados aplicables al contexto regional.', 2, FALSE, '121-136', 'ContributionToJournal', 'Publisher Copyright: © 2022 Taylor & Francis', 'FREE', '2026-04-30', 2022, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/135', NULL, 'Spanish', 'Thesis', 30, 4, 2026, 1000123498),
+('faf315fa-fa81-50b0-93b1-be5f7d50e833', 'Calidad del aire: estado del arte y desafíos', 2021, '2026-06-30 09:00:00', 'Article', 16, '2021-08-11', '2', 'sync_user', '80165df5f714c7a9702ec28d787c95f16095bf4b', 11, 'root', 'Estudio sobre calidad del aire con resultados aplicables al contexto regional.', 5, TRUE, '305-315', 'ContributionToJournal', 'Publisher Copyright: © 2021 MDPI', 'Restricted', '2026-06-30', 2021, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/136', 'Resultados preliminares', 'Spanish', 'Review', 30, 6, 2026, 1000234567),
+('284a4a18-3a25-544a-900f-8d7d6a066b0d', 'Un enfoque basado en datos para dispositivos médicos', 2026, '2025-04-30 09:00:00', 'Conference paper', NULL, '2026-02-15', NULL, 'sync_user', 'bc2931e6e96555b5641e8bdcab77c7e7e524773b', 7, 'root', 'Estudio sobre dispositivos médicos con resultados aplicables al contexto regional.', 3, TRUE, '255-261', 'ContributionToConference', 'Publisher Copyright: © 2026 Wiley', 'FREE', '2025-04-30', 2026, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/137', NULL, 'English', 'Research', 30, 4, 2025, 1000123498),
+('d0d6d6db-bc6a-550f-957a-3397513472f4', 'Revisión sistemática sobre sistemas embebidos', 2019, '2026-05-31 09:00:00', 'Article', 2, '2019-07-04', '3', 'sync_user', '90a9f3b725faabb3c70bd3b9f6705eb276f98f61', 11, 'root', 'Estudio sobre sistemas embebidos con resultados aplicables al contexto regional.', 2, TRUE, '180-190', 'ContributionToJournal', 'Publisher Copyright: © 2019 Springer', 'FREE', '2026-05-31', 2019, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/138', NULL, 'English', 'Research', 31, 5, 2026, 1000234567),
+('8a1c8253-0696-5b0e-9b7b-3fe16f75fa1b', 'Geomecánica: estado del arte y desafíos', 2020, '2025-08-31 09:00:00', 'Conference paper', NULL, '2020-10-09', NULL, 'sync_user', 'e6f5686f7b4a0cacb2ce0b8aa7673966f4dfd764', 19, 'root', 'Estudio sobre geomecánica con resultados aplicables al contexto regional.', 2, TRUE, '164-182', 'ContributionToConference', 'Publisher Copyright: © 2020 MDPI', 'FREE', '2025-08-31', 2020, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/139', 'Resultados preliminares', 'English', 'Research', 31, 8, 2025, 1000123498),
+('27c04912-6366-57d2-b1da-8bac4d7be227', 'Análisis comparativo de estrategias de salud pública', 2021, '2026-08-31 09:00:00', 'Chapter', NULL, '2021-05-14', NULL, 'sync_user', 'b27e809ff9ecb74e13b279ccaae5528bee9f85d6', 14, 'root', 'Estudio sobre salud pública con resultados aplicables al contexto regional.', 2, TRUE, '379-392', 'ContributionToBookAnthology', 'Publisher Copyright: © 2021 Wiley', 'Restricted', '2026-08-31', 2021, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/140', NULL, 'English', 'Research', 31, 8, 2026, 1000234567),
+('a33ae167-6584-5446-864a-604e210b67bf', 'Gestión hospitalaria: estado del arte y desafíos', 2026, '2025-06-30 09:00:00', 'Chapter', NULL, '2026-01-07', NULL, 'sync_user', '6fa441bf2f826b4cbe84bd927c88cb170752e4c5', 25, 'root', 'Estudio sobre gestión hospitalaria con resultados aplicables al contexto regional.', 4, TRUE, '308-332', 'ContributionToBookAnthology', 'Publisher Copyright: © 2026 Springer', 'FREE', '2025-06-30', 2026, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/141', NULL, 'English', 'Review', 30, 6, 2025, 1000123498),
+('e87228bb-8bad-5c58-8638-71be118c2c12', 'Revisión sistemática sobre ortodoncia', 2020, '2025-11-30 09:00:00', 'Book', NULL, '2020-07-25', NULL, 'sync_user', 'e360fe0ca2a02aa6b19ab7fbe9c833c5196584f6', 20, 'root', 'Estudio sobre ortodoncia con resultados aplicables al contexto regional.', 3, TRUE, '349-368', 'Book', 'Publisher Copyright: © 2020 IEEE', 'FREE', '2025-11-30', 2020, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/142', 'Resultados preliminares', 'Spanish', 'Research', 30, 11, 2025, 1000234567),
+('19235c0c-7f64-5acd-8545-7a2780fa00ec', 'Impacto de neuropsicología en comunidades altoandinas', 2019, '2025-12-31 09:00:00', 'Article', 38, '2019-08-02', '9', 'sync_user', 'e4193c10d70d8f2672bb1af345f153c914e633a5', 6, 'root', 'Estudio sobre neuropsicología con resultados aplicables al contexto regional.', 3, TRUE, '309-314', 'ContributionToJournal', 'Publisher Copyright: © 2019 Wiley', 'FREE', '2025-12-31', 2019, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/143', NULL, 'Spanish', 'Research', 31, 12, 2025, 1000123498),
+('ac82b641-81d5-586c-9c16-a5ff1a813bd0', 'Evaluación de derecho ambiental en la región sur del Perú', 2025, '2025-09-30 09:00:00', 'Article', 80, '2025-03-02', '9', 'sync_user', '0d39e60b25ec89934d02bdd79f24615ab9a07a8f', 17, 'root', 'Estudio sobre derecho ambiental con resultados aplicables al contexto regional.', 4, TRUE, '363-379', 'ContributionToJournal', 'Publisher Copyright: © 2025 Springer', 'Restricted', '2025-09-30', 2025, 'ResearchOutput', 'https://repositorio.ucsm.edu.pe/handle/123456789/144', NULL, 'English', 'Research', 30, 9, 2025, 1000234567);
+
+INSERT INTO historico_contributors (uuid, contributors) VALUES
+('497996b7-4c96-52e4-942a-136a548a6bd0', 'Salas Cáceres, Gabriela'),
+('1af764bb-2ec4-51f3-8fe4-73f3fb836b2f', 'Flores Delgado, Luis Miguel'),
+('1af764bb-2ec4-51f3-8fe4-73f3fb836b2f', 'Silva, Pedro Henrique'),
+('1af764bb-2ec4-51f3-8fe4-73f3fb836b2f', 'Rossi, Giulia'),
+('faf986d8-a752-5707-9399-775fd3b27034', 'Huamán Benavente, Mariela'),
+('faf986d8-a752-5707-9399-775fd3b27034', 'Talavera Zegarra, Juan Carlos'),
+('faf986d8-a752-5707-9399-775fd3b27034', 'Cornejo Flores, Silvia'),
+('faf986d8-a752-5707-9399-775fd3b27034', 'Rossi, Giulia'),
+('4569c6cd-4b89-5e0d-b7e4-e52983d27605', 'Carpio Talavera, Sergio'),
+('4569c6cd-4b89-5e0d-b7e4-e52983d27605', 'Linares Manrique, Manuel'),
+('4569c6cd-4b89-5e0d-b7e4-e52983d27605', 'Tanaka, Hiroshi'),
+('84b7e3c9-57fe-5358-ada8-0c7c77b0b2c9', 'Talavera Paredes, Lucía'),
+('84b7e3c9-57fe-5358-ada8-0c7c77b0b2c9', 'Huamán Benavente, Mariela'),
+('84b7e3c9-57fe-5358-ada8-0c7c77b0b2c9', 'Talavera Mamani, Sofía'),
+('84b7e3c9-57fe-5358-ada8-0c7c77b0b2c9', 'Rossi, Giulia'),
+('84b7e3c9-57fe-5358-ada8-0c7c77b0b2c9', 'Müller, Anna'),
+('377296b1-1063-5a80-8d7c-72fc82cff6ec', 'Rivera Pinto, Andrés'),
+('377296b1-1063-5a80-8d7c-72fc82cff6ec', 'Müller, Anna'),
+('f0d96242-d888-5067-a229-25c4933fe3c7', 'Mamani Chávez, Lucía'),
+('f0d96242-d888-5067-a229-25c4933fe3c7', 'Mamani Ponce, Álvaro'),
+('f0d96242-d888-5067-a229-25c4933fe3c7', 'Cáceres Salas, Gabriela'),
+('f0d96242-d888-5067-a229-25c4933fe3c7', 'Müller, Anna'),
+('f0d96242-d888-5067-a229-25c4933fe3c7', 'García López, Marta'),
+('2f47ba36-b502-5ec6-9653-857fc5902fee', 'Linares Manrique, Manuel'),
+('79096706-f076-5cfe-8324-9b2acf5fdf6c', 'Cornejo Flores, Silvia'),
+('79096706-f076-5cfe-8324-9b2acf5fdf6c', 'Müller, Anna'),
+('f29e58ba-bd0a-5583-88c3-4e16a1472ab4', 'Velarde Benavente, José Antonio'),
+('9292d414-bd67-5857-aabd-dc5fb3882d14', 'Huamán Núñez, Sofía'),
+('9292d414-bd67-5857-aabd-dc5fb3882d14', 'Valdivia Zegarra, Daniela'),
+('9292d414-bd67-5857-aabd-dc5fb3882d14', 'Mamani Chávez, Lucía'),
+('c812175b-1b7b-593d-9bff-099978c05982', 'Mamani Málaga, Luis Miguel'),
+('c812175b-1b7b-593d-9bff-099978c05982', 'Ponce Talavera, Milagros'),
+('c812175b-1b7b-593d-9bff-099978c05982', 'Cáceres Pinto, Manuel'),
+('c812175b-1b7b-593d-9bff-099978c05982', 'Okafor, Chinedu'),
+('c812175b-1b7b-593d-9bff-099978c05982', 'Smith, John'),
+('36c994e1-f729-5acd-909c-be594686e3f1', 'Chávez Talavera, Daniela'),
+('36c994e1-f729-5acd-909c-be594686e3f1', 'Salas Cáceres, Gabriela'),
+('36c994e1-f729-5acd-909c-be594686e3f1', 'Silva, Pedro Henrique'),
+('36c994e1-f729-5acd-909c-be594686e3f1', 'Rossi, Giulia'),
+('fee4517c-4b26-5e68-9081-cd05860f8e14', 'Mamani Ponce, Álvaro'),
+('056038b9-8cb7-59a5-b1a7-fb2aa5acba59', 'Valdivia Zegarra, Daniela'),
+('056038b9-8cb7-59a5-b1a7-fb2aa5acba59', 'Cáceres Salas, Gabriela'),
+('056038b9-8cb7-59a5-b1a7-fb2aa5acba59', 'García López, Marta'),
+('056038b9-8cb7-59a5-b1a7-fb2aa5acba59', 'Fernández Díaz, Pablo'),
+('246f5999-3b1a-549a-8cd1-9998ddd448d7', 'Cáceres Pinto, Manuel'),
+('246f5999-3b1a-549a-8cd1-9998ddd448d7', 'Salas Cáceres, Gabriela'),
+('246f5999-3b1a-549a-8cd1-9998ddd448d7', 'Talavera Paredes, Lucía'),
+('246f5999-3b1a-549a-8cd1-9998ddd448d7', 'Silva, Pedro Henrique'),
+('8309f9d4-941e-55b6-95b3-5a07e78d926f', 'Núñez Benavente, Mariela'),
+('8309f9d4-941e-55b6-95b3-5a07e78d926f', 'Talavera Paredes, Lucía'),
+('8309f9d4-941e-55b6-95b3-5a07e78d926f', 'Velarde Benavente, José Antonio'),
+('8309f9d4-941e-55b6-95b3-5a07e78d926f', 'Müller, Anna'),
+('e947bb86-bdad-53dc-bd44-1009e4edba7a', 'Talavera Zegarra, Juan Carlos'),
+('e947bb86-bdad-53dc-bd44-1009e4edba7a', 'Mamani Chávez, Lucía'),
+('04d6d30c-9e3f-5c19-b738-9ae1fa55299a', 'Cáceres Salas, Gabriela'),
+('04d6d30c-9e3f-5c19-b738-9ae1fa55299a', 'Linares Manrique, Manuel'),
+('04d6d30c-9e3f-5c19-b738-9ae1fa55299a', 'Rossi, Giulia'),
+('04d6d30c-9e3f-5c19-b738-9ae1fa55299a', 'Silva, Pedro Henrique'),
+('0254529b-2c33-5ab1-b7a8-3ff98142f249', 'Paredes Quispe, Renzo'),
+('0254529b-2c33-5ab1-b7a8-3ff98142f249', 'Huamán Benavente, Mariela'),
+('0254529b-2c33-5ab1-b7a8-3ff98142f249', 'Talavera Zegarra, Juan Carlos'),
+('f593c2be-1a11-58f0-a247-7bc3365c6189', 'Núñez Rivera, Andrea'),
+('f593c2be-1a11-58f0-a247-7bc3365c6189', 'Cornejo Flores, Silvia'),
+('f593c2be-1a11-58f0-a247-7bc3365c6189', 'Arenas Herrera, Lucía'),
+('f593c2be-1a11-58f0-a247-7bc3365c6189', 'García López, Marta'),
+('248298ec-f01f-5127-8f21-eeb8d90aeba7', 'Delgado Ramos, Manuel'),
+('248298ec-f01f-5127-8f21-eeb8d90aeba7', 'Núñez Rivera, Andrea'),
+('248298ec-f01f-5127-8f21-eeb8d90aeba7', 'Cáceres Pinto, Manuel'),
+('124f1c6e-d448-5c45-8f93-4e0dc83d7495', 'Chávez Cáceres, Carmen Rosa'),
+('124f1c6e-d448-5c45-8f93-4e0dc83d7495', 'Núñez Benavente, Mariela'),
+('124f1c6e-d448-5c45-8f93-4e0dc83d7495', 'Cáceres Salas, Gabriela'),
+('124f1c6e-d448-5c45-8f93-4e0dc83d7495', 'Müller, Anna'),
+('124f1c6e-d448-5c45-8f93-4e0dc83d7495', 'Okafor, Chinedu'),
+('edd5aa9e-e294-50ed-987d-46422146358e', 'Benavente Quispe, Álvaro'),
+('edd5aa9e-e294-50ed-987d-46422146358e', 'Paredes Quispe, Renzo'),
+('edd5aa9e-e294-50ed-987d-46422146358e', 'Rivera Pinto, Andrés'),
+('fb7d4efe-21ea-5b5e-9bf1-a1d1402ddc26', 'Ponce Talavera, Milagros'),
+('fb7d4efe-21ea-5b5e-9bf1-a1d1402ddc26', 'Talavera Mamani, Sofía'),
+('fb7d4efe-21ea-5b5e-9bf1-a1d1402ddc26', 'Núñez Benavente, Mariela'),
+('a2086d85-6f92-5351-94b8-794238b864cb', 'Pinto Mamani, Fernando'),
+('a2086d85-6f92-5351-94b8-794238b864cb', 'Mamani Ponce, Álvaro'),
+('a2086d85-6f92-5351-94b8-794238b864cb', 'Delgado Ramos, Manuel'),
+('a2086d85-6f92-5351-94b8-794238b864cb', 'Rossi, Giulia'),
+('a2086d85-6f92-5351-94b8-794238b864cb', 'Tanaka, Hiroshi'),
+('11fd31da-21a7-55ed-8cbd-8f0c7efb974e', 'Ponce Linares, Andrea'),
+('11fd31da-21a7-55ed-8cbd-8f0c7efb974e', 'Cáceres Salas, Gabriela'),
+('11fd31da-21a7-55ed-8cbd-8f0c7efb974e', 'Rivera Pinto, Andrés'),
+('11fd31da-21a7-55ed-8cbd-8f0c7efb974e', 'Smith, John'),
+('379630ae-89f3-5ddc-9d4f-bdd307319bcd', 'Huamán Delgado, Álvaro'),
+('553e9421-e9c7-56a9-98b3-0097b968795e', 'Talavera Mamani, Sofía'),
+('553e9421-e9c7-56a9-98b3-0097b968795e', 'Carpio Talavera, Sergio'),
+('553e9421-e9c7-56a9-98b3-0097b968795e', 'Linares Manrique, Manuel'),
+('553e9421-e9c7-56a9-98b3-0097b968795e', 'Okafor, Chinedu'),
+('9d72ed21-7119-56c0-bd85-7cec3db85d9e', 'Benavente Zegarra, Manuel'),
+('9d72ed21-7119-56c0-bd85-7cec3db85d9e', 'Huamán Delgado, Álvaro'),
+('9d72ed21-7119-56c0-bd85-7cec3db85d9e', 'Silva, Pedro Henrique'),
+('89526843-78da-5c4f-a3b1-09c58bf3d47c', 'Arenas Herrera, Lucía'),
+('89526843-78da-5c4f-a3b1-09c58bf3d47c', 'Silva, Pedro Henrique'),
+('96a1ee35-5f8f-52c0-96e4-3e54f47fa2bb', 'Málaga Cornejo, Carlos Alberto'),
+('96a1ee35-5f8f-52c0-96e4-3e54f47fa2bb', 'Tanaka, Hiroshi'),
+('96a1ee35-5f8f-52c0-96e4-3e54f47fa2bb', 'Smith, John'),
+('3b89701d-42b9-5d54-bf4e-758764d999ee', 'Salas Cáceres, Gabriela'),
+('3b89701d-42b9-5d54-bf4e-758764d999ee', 'Huamán Benavente, Mariela'),
+('3b89701d-42b9-5d54-bf4e-758764d999ee', 'Ponce Linares, Andrea'),
+('3b89701d-42b9-5d54-bf4e-758764d999ee', 'Rossi, Giulia'),
+('3b89701d-42b9-5d54-bf4e-758764d999ee', 'Tanaka, Hiroshi'),
+('95f898f1-e3ff-577d-862c-33a1262ea2ee', 'Flores Delgado, Luis Miguel'),
+('26c5abd9-b5b5-5564-a833-572990adff0c', 'Huamán Benavente, Mariela'),
+('16e96edd-a55e-5971-a253-8c3b5b0107a4', 'Carpio Talavera, Sergio'),
+('16e96edd-a55e-5971-a253-8c3b5b0107a4', 'Rossi, Giulia'),
+('faf315fa-fa81-50b0-93b1-be5f7d50e833', 'Talavera Paredes, Lucía'),
+('faf315fa-fa81-50b0-93b1-be5f7d50e833', 'Valdivia Zegarra, Daniela'),
+('faf315fa-fa81-50b0-93b1-be5f7d50e833', 'Carpio Talavera, Sergio'),
+('faf315fa-fa81-50b0-93b1-be5f7d50e833', 'García López, Marta'),
+('faf315fa-fa81-50b0-93b1-be5f7d50e833', 'Fernández Díaz, Pablo'),
+('284a4a18-3a25-544a-900f-8d7d6a066b0d', 'Rivera Pinto, Andrés'),
+('284a4a18-3a25-544a-900f-8d7d6a066b0d', 'Ponce Linares, Andrea'),
+('284a4a18-3a25-544a-900f-8d7d6a066b0d', 'Valdivia Zegarra, Daniela'),
+('d0d6d6db-bc6a-550f-957a-3397513472f4', 'Mamani Chávez, Lucía'),
+('d0d6d6db-bc6a-550f-957a-3397513472f4', 'García López, Marta'),
+('8a1c8253-0696-5b0e-9b7b-3fe16f75fa1b', 'Linares Manrique, Manuel'),
+('8a1c8253-0696-5b0e-9b7b-3fe16f75fa1b', 'Arenas Herrera, Lucía'),
+('27c04912-6366-57d2-b1da-8bac4d7be227', 'Cornejo Flores, Silvia'),
+('27c04912-6366-57d2-b1da-8bac4d7be227', 'Velarde Benavente, José Antonio'),
+('a33ae167-6584-5446-864a-604e210b67bf', 'Velarde Benavente, José Antonio'),
+('a33ae167-6584-5446-864a-604e210b67bf', 'Huamán Delgado, Álvaro'),
+('a33ae167-6584-5446-864a-604e210b67bf', 'Tanaka, Hiroshi'),
+('a33ae167-6584-5446-864a-604e210b67bf', 'Silva, Pedro Henrique'),
+('e87228bb-8bad-5c58-8638-71be118c2c12', 'Huamán Núñez, Sofía'),
+('e87228bb-8bad-5c58-8638-71be118c2c12', 'Delgado Ramos, Manuel'),
+('e87228bb-8bad-5c58-8638-71be118c2c12', 'Okafor, Chinedu'),
+('19235c0c-7f64-5acd-8545-7a2780fa00ec', 'Mamani Málaga, Luis Miguel'),
+('19235c0c-7f64-5acd-8545-7a2780fa00ec', 'Ponce Talavera, Milagros'),
+('19235c0c-7f64-5acd-8545-7a2780fa00ec', 'Tanaka, Hiroshi'),
+('ac82b641-81d5-586c-9c16-a5ff1a813bd0', 'Chávez Talavera, Daniela'),
+('ac82b641-81d5-586c-9c16-a5ff1a813bd0', 'Velarde Benavente, José Antonio'),
+('ac82b641-81d5-586c-9c16-a5ff1a813bd0', 'Tanaka, Hiroshi'),
+('ac82b641-81d5-586c-9c16-a5ff1a813bd0', 'Smith, John');
+
+INSERT INTO investigador_historico (codigo_ucsm, uuid, publicacion_candidata_id, codigo_ucsm_coordinador) VALUES
+(2018778636, '497996b7-4c96-52e4-942a-136a548a6bd0', NULL, 1000234567),
+(2023202814, '1af764bb-2ec4-51f3-8fe4-73f3fb836b2f', NULL, 1000123498),
+(2018406311, 'faf986d8-a752-5707-9399-775fd3b27034', NULL, 1000234567),
+(2020682729, 'faf986d8-a752-5707-9399-775fd3b27034', NULL, 1000234567),
+(2013883864, 'faf986d8-a752-5707-9399-775fd3b27034', NULL, 1000234567),
+(2018622668, '4569c6cd-4b89-5e0d-b7e4-e52983d27605', NULL, 1000123498),
+(2022203152, '4569c6cd-4b89-5e0d-b7e4-e52983d27605', NULL, 1000123498),
+(2022235265, '84b7e3c9-57fe-5358-ada8-0c7c77b0b2c9', NULL, 1000234567),
+(2018406311, '84b7e3c9-57fe-5358-ada8-0c7c77b0b2c9', NULL, 1000234567),
+(2016499069, '84b7e3c9-57fe-5358-ada8-0c7c77b0b2c9', NULL, 1000234567),
+(2021672136, '377296b1-1063-5a80-8d7c-72fc82cff6ec', NULL, 1000123498),
+(2020726286, 'f0d96242-d888-5067-a229-25c4933fe3c7', NULL, 1000234567),
+(2018979734, 'f0d96242-d888-5067-a229-25c4933fe3c7', NULL, 1000234567),
+(2014716676, 'f0d96242-d888-5067-a229-25c4933fe3c7', NULL, 1000234567),
+(2022203152, '2f47ba36-b502-5ec6-9653-857fc5902fee', NULL, 1000123498),
+(2013883864, '79096706-f076-5cfe-8324-9b2acf5fdf6c', NULL, 1000234567),
+(2014800949, 'f29e58ba-bd0a-5583-88c3-4e16a1472ab4', NULL, 1000123498),
+(2020267899, '9292d414-bd67-5857-aabd-dc5fb3882d14', NULL, 1000234567),
+(2016658902, '9292d414-bd67-5857-aabd-dc5fb3882d14', NULL, 1000234567),
+(2020726286, '9292d414-bd67-5857-aabd-dc5fb3882d14', NULL, 1000234567),
+(2015777665, 'c812175b-1b7b-593d-9bff-099978c05982', NULL, 1000123498),
+(2011980335, 'c812175b-1b7b-593d-9bff-099978c05982', NULL, 1000123498),
+(2017225939, 'c812175b-1b7b-593d-9bff-099978c05982', NULL, 1000123498),
+(2018317040, '36c994e1-f729-5acd-909c-be594686e3f1', NULL, 1000234567),
+(2018778636, '36c994e1-f729-5acd-909c-be594686e3f1', NULL, 1000234567),
+(2018979734, 'fee4517c-4b26-5e68-9081-cd05860f8e14', NULL, 1000123498),
+(2016658902, '056038b9-8cb7-59a5-b1a7-fb2aa5acba59', NULL, 1000234567),
+(2014716676, '056038b9-8cb7-59a5-b1a7-fb2aa5acba59', NULL, 1000234567),
+(2017225939, '246f5999-3b1a-549a-8cd1-9998ddd448d7', NULL, 1000123498),
+(2018778636, '246f5999-3b1a-549a-8cd1-9998ddd448d7', NULL, 1000123498),
+(2022235265, '246f5999-3b1a-549a-8cd1-9998ddd448d7', NULL, 1000123498),
+(2022974045, '8309f9d4-941e-55b6-95b3-5a07e78d926f', NULL, 1000234567),
+(2022235265, '8309f9d4-941e-55b6-95b3-5a07e78d926f', NULL, 1000234567),
+(2014800949, '8309f9d4-941e-55b6-95b3-5a07e78d926f', NULL, 1000234567),
+(2020682729, 'e947bb86-bdad-53dc-bd44-1009e4edba7a', NULL, 1000123498),
+(2020726286, 'e947bb86-bdad-53dc-bd44-1009e4edba7a', NULL, 1000123498),
+(2014716676, '04d6d30c-9e3f-5c19-b738-9ae1fa55299a', NULL, 1000234567),
+(2022203152, '04d6d30c-9e3f-5c19-b738-9ae1fa55299a', NULL, 1000234567),
+(2014228996, '0254529b-2c33-5ab1-b7a8-3ff98142f249', NULL, 1000123498),
+(2018406311, '0254529b-2c33-5ab1-b7a8-3ff98142f249', NULL, 1000123498),
+(2020682729, '0254529b-2c33-5ab1-b7a8-3ff98142f249', NULL, 1000123498),
+(2024225242, 'f593c2be-1a11-58f0-a247-7bc3365c6189', NULL, 1000234567),
+(2013883864, 'f593c2be-1a11-58f0-a247-7bc3365c6189', NULL, 1000234567),
+(2020603329, 'f593c2be-1a11-58f0-a247-7bc3365c6189', NULL, 1000234567),
+(2022938696, '248298ec-f01f-5127-8f21-eeb8d90aeba7', NULL, 1000123498),
+(2024225242, '248298ec-f01f-5127-8f21-eeb8d90aeba7', NULL, 1000123498),
+(2017225939, '248298ec-f01f-5127-8f21-eeb8d90aeba7', NULL, 1000123498),
+(2015725950, '124f1c6e-d448-5c45-8f93-4e0dc83d7495', NULL, 1000234567),
+(2022974045, '124f1c6e-d448-5c45-8f93-4e0dc83d7495', NULL, 1000234567),
+(2014716676, '124f1c6e-d448-5c45-8f93-4e0dc83d7495', NULL, 1000234567),
+(2020852108, 'edd5aa9e-e294-50ed-987d-46422146358e', NULL, 1000123498),
+(2014228996, 'edd5aa9e-e294-50ed-987d-46422146358e', NULL, 1000123498),
+(2021672136, 'edd5aa9e-e294-50ed-987d-46422146358e', NULL, 1000123498),
+(2011980335, 'fb7d4efe-21ea-5b5e-9bf1-a1d1402ddc26', NULL, 1000234567),
+(2016499069, 'fb7d4efe-21ea-5b5e-9bf1-a1d1402ddc26', NULL, 1000234567),
+(2022974045, 'fb7d4efe-21ea-5b5e-9bf1-a1d1402ddc26', NULL, 1000234567),
+(2013812133, 'a2086d85-6f92-5351-94b8-794238b864cb', NULL, 1000123498),
+(2018979734, 'a2086d85-6f92-5351-94b8-794238b864cb', NULL, 1000123498),
+(2022938696, 'a2086d85-6f92-5351-94b8-794238b864cb', NULL, 1000123498),
+(2018950853, '11fd31da-21a7-55ed-8cbd-8f0c7efb974e', NULL, 1000234567),
+(2014716676, '11fd31da-21a7-55ed-8cbd-8f0c7efb974e', NULL, 1000234567),
+(2021672136, '11fd31da-21a7-55ed-8cbd-8f0c7efb974e', NULL, 1000234567),
+(2015673282, '379630ae-89f3-5ddc-9d4f-bdd307319bcd', NULL, 1000123498),
+(2016499069, '553e9421-e9c7-56a9-98b3-0097b968795e', NULL, 1000234567),
+(2018622668, '553e9421-e9c7-56a9-98b3-0097b968795e', NULL, 1000234567),
+(2022203152, '553e9421-e9c7-56a9-98b3-0097b968795e', NULL, 1000234567),
+(2014143608, '9d72ed21-7119-56c0-bd85-7cec3db85d9e', NULL, 1000123498),
+(2015673282, '9d72ed21-7119-56c0-bd85-7cec3db85d9e', NULL, 1000123498),
+(2020603329, '89526843-78da-5c4f-a3b1-09c58bf3d47c', NULL, 1000234567),
+(2011485872, '96a1ee35-5f8f-52c0-96e4-3e54f47fa2bb', NULL, 1000123498),
+(2018778636, '3b89701d-42b9-5d54-bf4e-758764d999ee', NULL, 1000234567),
+(2018406311, '3b89701d-42b9-5d54-bf4e-758764d999ee', NULL, 1000234567),
+(2018950853, '3b89701d-42b9-5d54-bf4e-758764d999ee', NULL, 1000234567),
+(2023202814, '95f898f1-e3ff-577d-862c-33a1262ea2ee', NULL, 1000123498),
+(2018406311, '26c5abd9-b5b5-5564-a833-572990adff0c', NULL, 1000234567),
+(2018622668, '16e96edd-a55e-5971-a253-8c3b5b0107a4', NULL, 1000123498),
+(2022235265, 'faf315fa-fa81-50b0-93b1-be5f7d50e833', NULL, 1000234567),
+(2016658902, 'faf315fa-fa81-50b0-93b1-be5f7d50e833', NULL, 1000234567),
+(2018622668, 'faf315fa-fa81-50b0-93b1-be5f7d50e833', NULL, 1000234567),
+(2021672136, '284a4a18-3a25-544a-900f-8d7d6a066b0d', NULL, 1000123498),
+(2018950853, '284a4a18-3a25-544a-900f-8d7d6a066b0d', NULL, 1000123498),
+(2016658902, '284a4a18-3a25-544a-900f-8d7d6a066b0d', NULL, 1000123498),
+(2020726286, 'd0d6d6db-bc6a-550f-957a-3397513472f4', NULL, 1000234567),
+(2022203152, '8a1c8253-0696-5b0e-9b7b-3fe16f75fa1b', NULL, 1000123498),
+(2020603329, '8a1c8253-0696-5b0e-9b7b-3fe16f75fa1b', NULL, 1000123498),
+(2013883864, '27c04912-6366-57d2-b1da-8bac4d7be227', NULL, 1000234567),
+(2014800949, '27c04912-6366-57d2-b1da-8bac4d7be227', NULL, 1000234567),
+(2014800949, 'a33ae167-6584-5446-864a-604e210b67bf', NULL, 1000123498),
+(2015673282, 'a33ae167-6584-5446-864a-604e210b67bf', NULL, 1000123498),
+(2020267899, 'e87228bb-8bad-5c58-8638-71be118c2c12', NULL, 1000234567),
+(2022938696, 'e87228bb-8bad-5c58-8638-71be118c2c12', NULL, 1000234567),
+(2015777665, '19235c0c-7f64-5acd-8545-7a2780fa00ec', NULL, 1000123498),
+(2011980335, '19235c0c-7f64-5acd-8545-7a2780fa00ec', NULL, 1000123498),
+(2018317040, 'ac82b641-81d5-586c-9c16-a5ff1a813bd0', NULL, 1000234567),
+(2014800949, 'ac82b641-81d5-586c-9c16-a5ff1a813bd0', NULL, 1000234567);
+
+INSERT INTO historico_identifiers (uuid, identifiers) VALUES
+('497996b7-4c96-52e4-942a-136a548a6bd0', '85100000000 (Scopus)'),
+('497996b7-4c96-52e4-942a-136a548a6bd0', '10.1186/pcris.2023.1000 (DOI)'),
+('1af764bb-2ec4-51f3-8fe4-73f3fb836b2f', '85100000037 (Scopus)'),
+('1af764bb-2ec4-51f3-8fe4-73f3fb836b2f', '10.1463/pcris.2022.1001 (DOI)'),
+('faf986d8-a752-5707-9399-775fd3b27034', '85100000074 (Scopus)'),
+('faf986d8-a752-5707-9399-775fd3b27034', '10.9028/pcris.2021.1002 (DOI)'),
+('4569c6cd-4b89-5e0d-b7e4-e52983d27605', '85100000111 (Scopus)'),
+('4569c6cd-4b89-5e0d-b7e4-e52983d27605', '10.2057/pcris.2024.1003 (DOI)'),
+('84b7e3c9-57fe-5358-ada8-0c7c77b0b2c9', '85100000148 (Scopus)'),
+('84b7e3c9-57fe-5358-ada8-0c7c77b0b2c9', '10.9650/pcris.2023.1004 (DOI)'),
+('377296b1-1063-5a80-8d7c-72fc82cff6ec', '85100000185 (Scopus)'),
+('377296b1-1063-5a80-8d7c-72fc82cff6ec', '10.9004/pcris.2020.1005 (DOI)'),
+('f0d96242-d888-5067-a229-25c4933fe3c7', '85100000222 (Scopus)'),
+('f0d96242-d888-5067-a229-25c4933fe3c7', '10.2000/pcris.2024.1006 (DOI)'),
+('2f47ba36-b502-5ec6-9653-857fc5902fee', '85100000259 (Scopus)'),
+('2f47ba36-b502-5ec6-9653-857fc5902fee', '10.3521/pcris.2023.1007 (DOI)'),
+('79096706-f076-5cfe-8324-9b2acf5fdf6c', '85100000296 (Scopus)'),
+('79096706-f076-5cfe-8324-9b2acf5fdf6c', '10.3539/pcris.2026.1008 (DOI)'),
+('f29e58ba-bd0a-5583-88c3-4e16a1472ab4', '85100000333 (Scopus)'),
+('f29e58ba-bd0a-5583-88c3-4e16a1472ab4', '10.1460/pcris.2019.1009 (DOI)'),
+('9292d414-bd67-5857-aabd-dc5fb3882d14', '85100000370 (Scopus)'),
+('9292d414-bd67-5857-aabd-dc5fb3882d14', '10.7933/pcris.2020.1010 (DOI)'),
+('c812175b-1b7b-593d-9bff-099978c05982', '85100000407 (Scopus)'),
+('c812175b-1b7b-593d-9bff-099978c05982', '10.3589/pcris.2022.1011 (DOI)'),
+('36c994e1-f729-5acd-909c-be594686e3f1', '85100000444 (Scopus)'),
+('36c994e1-f729-5acd-909c-be594686e3f1', '10.9536/pcris.2025.1012 (DOI)'),
+('fee4517c-4b26-5e68-9081-cd05860f8e14', '85100000481 (Scopus)'),
+('fee4517c-4b26-5e68-9081-cd05860f8e14', '10.6345/pcris.2026.1013 (DOI)'),
+('056038b9-8cb7-59a5-b1a7-fb2aa5acba59', '85100000518 (Scopus)'),
+('056038b9-8cb7-59a5-b1a7-fb2aa5acba59', '10.7328/pcris.2026.1014 (DOI)'),
+('246f5999-3b1a-549a-8cd1-9998ddd448d7', '85100000555 (Scopus)'),
+('246f5999-3b1a-549a-8cd1-9998ddd448d7', '10.1756/pcris.2026.1015 (DOI)'),
+('8309f9d4-941e-55b6-95b3-5a07e78d926f', '85100000592 (Scopus)'),
+('8309f9d4-941e-55b6-95b3-5a07e78d926f', '10.6121/pcris.2020.1016 (DOI)'),
+('e947bb86-bdad-53dc-bd44-1009e4edba7a', '85100000629 (Scopus)'),
+('e947bb86-bdad-53dc-bd44-1009e4edba7a', '10.7303/pcris.2022.1017 (DOI)'),
+('04d6d30c-9e3f-5c19-b738-9ae1fa55299a', '85100000666 (Scopus)'),
+('04d6d30c-9e3f-5c19-b738-9ae1fa55299a', '10.3725/pcris.2026.1018 (DOI)'),
+('0254529b-2c33-5ab1-b7a8-3ff98142f249', '85100000703 (Scopus)'),
+('0254529b-2c33-5ab1-b7a8-3ff98142f249', '10.1094/pcris.2024.1019 (DOI)'),
+('f593c2be-1a11-58f0-a247-7bc3365c6189', '85100000740 (Scopus)'),
+('f593c2be-1a11-58f0-a247-7bc3365c6189', '10.1582/pcris.2023.1020 (DOI)'),
+('248298ec-f01f-5127-8f21-eeb8d90aeba7', '85100000777 (Scopus)'),
+('248298ec-f01f-5127-8f21-eeb8d90aeba7', '10.1714/pcris.2019.1021 (DOI)'),
+('124f1c6e-d448-5c45-8f93-4e0dc83d7495', '85100000814 (Scopus)'),
+('124f1c6e-d448-5c45-8f93-4e0dc83d7495', '10.1247/pcris.2021.1022 (DOI)'),
+('edd5aa9e-e294-50ed-987d-46422146358e', '85100000851 (Scopus)'),
+('edd5aa9e-e294-50ed-987d-46422146358e', '10.8669/pcris.2020.1023 (DOI)'),
+('fb7d4efe-21ea-5b5e-9bf1-a1d1402ddc26', '85100000888 (Scopus)'),
+('fb7d4efe-21ea-5b5e-9bf1-a1d1402ddc26', '10.2890/pcris.2020.1024 (DOI)'),
+('a2086d85-6f92-5351-94b8-794238b864cb', '85100000925 (Scopus)'),
+('a2086d85-6f92-5351-94b8-794238b864cb', '10.4899/pcris.2020.1025 (DOI)'),
+('11fd31da-21a7-55ed-8cbd-8f0c7efb974e', '85100000962 (Scopus)'),
+('11fd31da-21a7-55ed-8cbd-8f0c7efb974e', '10.8724/pcris.2023.1026 (DOI)'),
+('379630ae-89f3-5ddc-9d4f-bdd307319bcd', '85100000999 (Scopus)'),
+('379630ae-89f3-5ddc-9d4f-bdd307319bcd', '10.5841/pcris.2026.1027 (DOI)'),
+('553e9421-e9c7-56a9-98b3-0097b968795e', '85100001036 (Scopus)'),
+('553e9421-e9c7-56a9-98b3-0097b968795e', '10.5110/pcris.2019.1028 (DOI)'),
+('9d72ed21-7119-56c0-bd85-7cec3db85d9e', '85100001073 (Scopus)'),
+('9d72ed21-7119-56c0-bd85-7cec3db85d9e', '10.4683/pcris.2025.1029 (DOI)'),
+('89526843-78da-5c4f-a3b1-09c58bf3d47c', '85100001110 (Scopus)'),
+('89526843-78da-5c4f-a3b1-09c58bf3d47c', '10.7193/pcris.2021.1030 (DOI)'),
+('96a1ee35-5f8f-52c0-96e4-3e54f47fa2bb', '85100001147 (Scopus)'),
+('96a1ee35-5f8f-52c0-96e4-3e54f47fa2bb', '10.7146/pcris.2026.1031 (DOI)'),
+('3b89701d-42b9-5d54-bf4e-758764d999ee', '85100001184 (Scopus)'),
+('3b89701d-42b9-5d54-bf4e-758764d999ee', '10.9290/pcris.2019.1032 (DOI)'),
+('95f898f1-e3ff-577d-862c-33a1262ea2ee', '85100001221 (Scopus)'),
+('95f898f1-e3ff-577d-862c-33a1262ea2ee', '10.6836/pcris.2025.1033 (DOI)'),
+('26c5abd9-b5b5-5564-a833-572990adff0c', '85100001258 (Scopus)'),
+('26c5abd9-b5b5-5564-a833-572990adff0c', '10.9934/pcris.2020.1034 (DOI)'),
+('16e96edd-a55e-5971-a253-8c3b5b0107a4', '85100001295 (Scopus)'),
+('16e96edd-a55e-5971-a253-8c3b5b0107a4', '10.2584/pcris.2022.1035 (DOI)'),
+('faf315fa-fa81-50b0-93b1-be5f7d50e833', '85100001332 (Scopus)'),
+('faf315fa-fa81-50b0-93b1-be5f7d50e833', '10.6675/pcris.2021.1036 (DOI)'),
+('284a4a18-3a25-544a-900f-8d7d6a066b0d', '85100001369 (Scopus)'),
+('284a4a18-3a25-544a-900f-8d7d6a066b0d', '10.8353/pcris.2026.1037 (DOI)'),
+('d0d6d6db-bc6a-550f-957a-3397513472f4', '85100001406 (Scopus)'),
+('d0d6d6db-bc6a-550f-957a-3397513472f4', '10.6038/pcris.2019.1038 (DOI)'),
+('8a1c8253-0696-5b0e-9b7b-3fe16f75fa1b', '85100001443 (Scopus)'),
+('8a1c8253-0696-5b0e-9b7b-3fe16f75fa1b', '10.6091/pcris.2020.1039 (DOI)'),
+('27c04912-6366-57d2-b1da-8bac4d7be227', '85100001480 (Scopus)'),
+('27c04912-6366-57d2-b1da-8bac4d7be227', '10.4406/pcris.2021.1040 (DOI)'),
+('a33ae167-6584-5446-864a-604e210b67bf', '85100001517 (Scopus)'),
+('a33ae167-6584-5446-864a-604e210b67bf', '10.6531/pcris.2026.1041 (DOI)'),
+('e87228bb-8bad-5c58-8638-71be118c2c12', '85100001554 (Scopus)'),
+('e87228bb-8bad-5c58-8638-71be118c2c12', '10.6315/pcris.2020.1042 (DOI)'),
+('19235c0c-7f64-5acd-8545-7a2780fa00ec', '85100001591 (Scopus)'),
+('19235c0c-7f64-5acd-8545-7a2780fa00ec', '10.9924/pcris.2019.1043 (DOI)'),
+('ac82b641-81d5-586c-9c16-a5ff1a813bd0', '85100001628 (Scopus)'),
+('ac82b641-81d5-586c-9c16-a5ff1a813bd0', '10.8473/pcris.2025.1044 (DOI)');
+
+INSERT INTO historico_links (uuid, pure_id, link_type, url, description) VALUES
+('497996b7-4c96-52e4-942a-136a548a6bd0', 14470000, 'Enlace externo', 'https://doi.org/10.1186/pcris.2023.1000', 'MDPI'),
+('1af764bb-2ec4-51f3-8fe4-73f3fb836b2f', 14470001, 'Enlace externo', 'https://doi.org/10.1463/pcris.2022.1001', 'Taylor & Francis'),
+('faf986d8-a752-5707-9399-775fd3b27034', 14470002, 'Enlace externo', 'https://doi.org/10.9028/pcris.2021.1002', 'Wiley'),
+('4569c6cd-4b89-5e0d-b7e4-e52983d27605', 14470003, 'Enlace externo', 'https://doi.org/10.2057/pcris.2024.1003', 'IEEE'),
+('84b7e3c9-57fe-5358-ada8-0c7c77b0b2c9', 14470004, 'Enlace externo', 'https://doi.org/10.9650/pcris.2023.1004', 'Springer'),
+('377296b1-1063-5a80-8d7c-72fc82cff6ec', 14470005, 'Enlace externo', 'https://doi.org/10.9004/pcris.2020.1005', 'MDPI'),
+('f0d96242-d888-5067-a229-25c4933fe3c7', 14470006, 'Enlace externo', 'https://doi.org/10.2000/pcris.2024.1006', 'Springer'),
+('2f47ba36-b502-5ec6-9653-857fc5902fee', 14470007, 'Enlace externo', 'https://doi.org/10.3521/pcris.2023.1007', 'IEEE'),
+('79096706-f076-5cfe-8324-9b2acf5fdf6c', 14470008, 'Enlace externo', 'https://doi.org/10.3539/pcris.2026.1008', 'Elsevier'),
+('f29e58ba-bd0a-5583-88c3-4e16a1472ab4', 14470009, 'Enlace externo', 'https://doi.org/10.1460/pcris.2019.1009', 'Taylor & Francis'),
+('9292d414-bd67-5857-aabd-dc5fb3882d14', 14470010, 'Enlace externo', 'https://doi.org/10.7933/pcris.2020.1010', 'Wiley'),
+('c812175b-1b7b-593d-9bff-099978c05982', 14470011, 'Enlace externo', 'https://doi.org/10.3589/pcris.2022.1011', 'Springer'),
+('36c994e1-f729-5acd-909c-be594686e3f1', 14470012, 'Enlace externo', 'https://doi.org/10.9536/pcris.2025.1012', 'IEEE'),
+('fee4517c-4b26-5e68-9081-cd05860f8e14', 14470013, 'Enlace externo', 'https://doi.org/10.6345/pcris.2026.1013', 'Wiley'),
+('056038b9-8cb7-59a5-b1a7-fb2aa5acba59', 14470014, 'Enlace externo', 'https://doi.org/10.7328/pcris.2026.1014', 'MDPI'),
+('246f5999-3b1a-549a-8cd1-9998ddd448d7', 14470015, 'Enlace externo', 'https://doi.org/10.1756/pcris.2026.1015', 'Springer'),
+('8309f9d4-941e-55b6-95b3-5a07e78d926f', 14470016, 'Enlace externo', 'https://doi.org/10.6121/pcris.2020.1016', 'Taylor & Francis'),
+('e947bb86-bdad-53dc-bd44-1009e4edba7a', 14470017, 'Enlace externo', 'https://doi.org/10.7303/pcris.2022.1017', 'Wiley'),
+('04d6d30c-9e3f-5c19-b738-9ae1fa55299a', 14470018, 'Enlace externo', 'https://doi.org/10.3725/pcris.2026.1018', 'MDPI'),
+('0254529b-2c33-5ab1-b7a8-3ff98142f249', 14470019, 'Enlace externo', 'https://doi.org/10.1094/pcris.2024.1019', 'SciELO'),
+('f593c2be-1a11-58f0-a247-7bc3365c6189', 14470020, 'Enlace externo', 'https://doi.org/10.1582/pcris.2023.1020', 'Elsevier'),
+('248298ec-f01f-5127-8f21-eeb8d90aeba7', 14470021, 'Enlace externo', 'https://doi.org/10.1714/pcris.2019.1021', 'Elsevier'),
+('124f1c6e-d448-5c45-8f93-4e0dc83d7495', 14470022, 'Enlace externo', 'https://doi.org/10.1247/pcris.2021.1022', 'Springer'),
+('edd5aa9e-e294-50ed-987d-46422146358e', 14470023, 'Enlace externo', 'https://doi.org/10.8669/pcris.2020.1023', 'MDPI'),
+('fb7d4efe-21ea-5b5e-9bf1-a1d1402ddc26', 14470024, 'Enlace externo', 'https://doi.org/10.2890/pcris.2020.1024', 'Taylor & Francis'),
+('a2086d85-6f92-5351-94b8-794238b864cb', 14470025, 'Enlace externo', 'https://doi.org/10.4899/pcris.2020.1025', 'Taylor & Francis'),
+('11fd31da-21a7-55ed-8cbd-8f0c7efb974e', 14470026, 'Enlace externo', 'https://doi.org/10.8724/pcris.2023.1026', 'Taylor & Francis'),
+('379630ae-89f3-5ddc-9d4f-bdd307319bcd', 14470027, 'Enlace externo', 'https://doi.org/10.5841/pcris.2026.1027', 'Springer'),
+('553e9421-e9c7-56a9-98b3-0097b968795e', 14470028, 'Enlace externo', 'https://doi.org/10.5110/pcris.2019.1028', 'IEEE'),
+('9d72ed21-7119-56c0-bd85-7cec3db85d9e', 14470029, 'Enlace externo', 'https://doi.org/10.4683/pcris.2025.1029', 'Springer'),
+('89526843-78da-5c4f-a3b1-09c58bf3d47c', 14470030, 'Enlace externo', 'https://doi.org/10.7193/pcris.2021.1030', 'Wiley'),
+('96a1ee35-5f8f-52c0-96e4-3e54f47fa2bb', 14470031, 'Enlace externo', 'https://doi.org/10.7146/pcris.2026.1031', 'IEEE'),
+('3b89701d-42b9-5d54-bf4e-758764d999ee', 14470032, 'Enlace externo', 'https://doi.org/10.9290/pcris.2019.1032', 'Taylor & Francis'),
+('95f898f1-e3ff-577d-862c-33a1262ea2ee', 14470033, 'Enlace externo', 'https://doi.org/10.6836/pcris.2025.1033', 'MDPI'),
+('26c5abd9-b5b5-5564-a833-572990adff0c', 14470034, 'Enlace externo', 'https://doi.org/10.9934/pcris.2020.1034', 'SciELO'),
+('16e96edd-a55e-5971-a253-8c3b5b0107a4', 14470035, 'Enlace externo', 'https://doi.org/10.2584/pcris.2022.1035', 'Taylor & Francis'),
+('faf315fa-fa81-50b0-93b1-be5f7d50e833', 14470036, 'Enlace externo', 'https://doi.org/10.6675/pcris.2021.1036', 'MDPI'),
+('284a4a18-3a25-544a-900f-8d7d6a066b0d', 14470037, 'Enlace externo', 'https://doi.org/10.8353/pcris.2026.1037', 'Wiley'),
+('d0d6d6db-bc6a-550f-957a-3397513472f4', 14470038, 'Enlace externo', 'https://doi.org/10.6038/pcris.2019.1038', 'Springer'),
+('8a1c8253-0696-5b0e-9b7b-3fe16f75fa1b', 14470039, 'Enlace externo', 'https://doi.org/10.6091/pcris.2020.1039', 'MDPI'),
+('27c04912-6366-57d2-b1da-8bac4d7be227', 14470040, 'Enlace externo', 'https://doi.org/10.4406/pcris.2021.1040', 'Wiley'),
+('a33ae167-6584-5446-864a-604e210b67bf', 14470041, 'Enlace externo', 'https://doi.org/10.6531/pcris.2026.1041', 'Springer'),
+('e87228bb-8bad-5c58-8638-71be118c2c12', 14470042, 'Enlace externo', 'https://doi.org/10.6315/pcris.2020.1042', 'IEEE'),
+('19235c0c-7f64-5acd-8545-7a2780fa00ec', 14470043, 'Enlace externo', 'https://doi.org/10.9924/pcris.2019.1043', 'Wiley'),
+('ac82b641-81d5-586c-9c16-a5ff1a813bd0', 14470044, 'Enlace externo', 'https://doi.org/10.8473/pcris.2025.1044', 'Springer');
+
+INSERT INTO historico_electronic_versions (uuid, electronic_versions) VALUES
+('497996b7-4c96-52e4-942a-136a548a6bd0', '10.1186/pcris.2023.1000'),
+('1af764bb-2ec4-51f3-8fe4-73f3fb836b2f', '10.1463/pcris.2022.1001'),
+('faf986d8-a752-5707-9399-775fd3b27034', '10.9028/pcris.2021.1002'),
+('4569c6cd-4b89-5e0d-b7e4-e52983d27605', '10.2057/pcris.2024.1003'),
+('84b7e3c9-57fe-5358-ada8-0c7c77b0b2c9', '10.9650/pcris.2023.1004'),
+('377296b1-1063-5a80-8d7c-72fc82cff6ec', '10.9004/pcris.2020.1005'),
+('f0d96242-d888-5067-a229-25c4933fe3c7', '10.2000/pcris.2024.1006'),
+('2f47ba36-b502-5ec6-9653-857fc5902fee', '10.3521/pcris.2023.1007'),
+('79096706-f076-5cfe-8324-9b2acf5fdf6c', '10.3539/pcris.2026.1008'),
+('f29e58ba-bd0a-5583-88c3-4e16a1472ab4', '10.1460/pcris.2019.1009'),
+('9292d414-bd67-5857-aabd-dc5fb3882d14', '10.7933/pcris.2020.1010'),
+('c812175b-1b7b-593d-9bff-099978c05982', '10.3589/pcris.2022.1011'),
+('36c994e1-f729-5acd-909c-be594686e3f1', '10.9536/pcris.2025.1012'),
+('fee4517c-4b26-5e68-9081-cd05860f8e14', '10.6345/pcris.2026.1013'),
+('056038b9-8cb7-59a5-b1a7-fb2aa5acba59', '10.7328/pcris.2026.1014'),
+('246f5999-3b1a-549a-8cd1-9998ddd448d7', '10.1756/pcris.2026.1015'),
+('8309f9d4-941e-55b6-95b3-5a07e78d926f', '10.6121/pcris.2020.1016'),
+('e947bb86-bdad-53dc-bd44-1009e4edba7a', '10.7303/pcris.2022.1017'),
+('04d6d30c-9e3f-5c19-b738-9ae1fa55299a', '10.3725/pcris.2026.1018'),
+('0254529b-2c33-5ab1-b7a8-3ff98142f249', '10.1094/pcris.2024.1019'),
+('f593c2be-1a11-58f0-a247-7bc3365c6189', '10.1582/pcris.2023.1020'),
+('248298ec-f01f-5127-8f21-eeb8d90aeba7', '10.1714/pcris.2019.1021'),
+('124f1c6e-d448-5c45-8f93-4e0dc83d7495', '10.1247/pcris.2021.1022'),
+('edd5aa9e-e294-50ed-987d-46422146358e', '10.8669/pcris.2020.1023'),
+('fb7d4efe-21ea-5b5e-9bf1-a1d1402ddc26', '10.2890/pcris.2020.1024'),
+('a2086d85-6f92-5351-94b8-794238b864cb', '10.4899/pcris.2020.1025'),
+('11fd31da-21a7-55ed-8cbd-8f0c7efb974e', '10.8724/pcris.2023.1026'),
+('379630ae-89f3-5ddc-9d4f-bdd307319bcd', '10.5841/pcris.2026.1027'),
+('553e9421-e9c7-56a9-98b3-0097b968795e', '10.5110/pcris.2019.1028'),
+('9d72ed21-7119-56c0-bd85-7cec3db85d9e', '10.4683/pcris.2025.1029'),
+('89526843-78da-5c4f-a3b1-09c58bf3d47c', '10.7193/pcris.2021.1030'),
+('96a1ee35-5f8f-52c0-96e4-3e54f47fa2bb', '10.7146/pcris.2026.1031'),
+('3b89701d-42b9-5d54-bf4e-758764d999ee', '10.9290/pcris.2019.1032'),
+('95f898f1-e3ff-577d-862c-33a1262ea2ee', '10.6836/pcris.2025.1033'),
+('26c5abd9-b5b5-5564-a833-572990adff0c', '10.9934/pcris.2020.1034'),
+('16e96edd-a55e-5971-a253-8c3b5b0107a4', '10.2584/pcris.2022.1035'),
+('faf315fa-fa81-50b0-93b1-be5f7d50e833', '10.6675/pcris.2021.1036'),
+('284a4a18-3a25-544a-900f-8d7d6a066b0d', '10.8353/pcris.2026.1037'),
+('d0d6d6db-bc6a-550f-957a-3397513472f4', '10.6038/pcris.2019.1038'),
+('8a1c8253-0696-5b0e-9b7b-3fe16f75fa1b', '10.6091/pcris.2020.1039'),
+('27c04912-6366-57d2-b1da-8bac4d7be227', '10.4406/pcris.2021.1040'),
+('a33ae167-6584-5446-864a-604e210b67bf', '10.6531/pcris.2026.1041'),
+('e87228bb-8bad-5c58-8638-71be118c2c12', '10.6315/pcris.2020.1042'),
+('19235c0c-7f64-5acd-8545-7a2780fa00ec', '10.9924/pcris.2019.1043'),
+('ac82b641-81d5-586c-9c16-a5ff1a813bd0', '10.8473/pcris.2025.1044');
+
+INSERT INTO historico_keywords_groups (uuid, keywords_groups) VALUES
+('497996b7-4c96-52e4-942a-136a548a6bd0', 'Ingeniería de software'),
+('1af764bb-2ec4-51f3-8fe4-73f3fb836b2f', 'Aprendizaje profundo'),
+('faf986d8-a752-5707-9399-775fd3b27034', 'Logística'),
+('4569c6cd-4b89-5e0d-b7e4-e52983d27605', 'Ingeniería sísmica'),
+('84b7e3c9-57fe-5358-ada8-0c7c77b0b2c9', 'Cambio climático'),
+('377296b1-1063-5a80-8d7c-72fc82cff6ec', 'Biomecánica'),
+('f0d96242-d888-5067-a229-25c4933fe3c7', 'Robótica'),
+('2f47ba36-b502-5ec6-9653-857fc5902fee', 'Minería sostenible'),
+('79096706-f076-5cfe-8324-9b2acf5fdf6c', 'Epidemiología'),
+('f29e58ba-bd0a-5583-88c3-4e16a1472ab4', 'Salud comunitaria'),
+('9292d414-bd67-5857-aabd-dc5fb3882d14', 'Salud bucal'),
+('c812175b-1b7b-593d-9bff-099978c05982', 'Psicología educativa'),
+('36c994e1-f729-5acd-909c-be594686e3f1', 'Derecho ambiental'),
+('fee4517c-4b26-5e68-9081-cd05860f8e14', 'Gestión estratégica'),
+('056038b9-8cb7-59a5-b1a7-fb2aa5acba59', 'Tributación'),
+('246f5999-3b1a-549a-8cd1-9998ddd448d7', 'Vivienda social'),
+('8309f9d4-941e-55b6-95b3-5a07e78d926f', 'Control de calidad de fármacos'),
+('e947bb86-bdad-53dc-bd44-1009e4edba7a', 'Producción de camélidos'),
+('04d6d30c-9e3f-5c19-b738-9ae1fa55299a', 'Educación inclusiva'),
+('0254529b-2c33-5ab1-b7a8-3ff98142f249', 'Medios y sociedad'),
+('f593c2be-1a11-58f0-a247-7bc3365c6189', 'Ingeniería de software'),
+('248298ec-f01f-5127-8f21-eeb8d90aeba7', 'Visión computacional'),
+('124f1c6e-d448-5c45-8f93-4e0dc83d7495', 'Logística'),
+('edd5aa9e-e294-50ed-987d-46422146358e', 'Materiales de construcción'),
+('fb7d4efe-21ea-5b5e-9bf1-a1d1402ddc26', 'Calidad del aire'),
+('a2086d85-6f92-5351-94b8-794238b864cb', 'Dispositivos médicos'),
+('11fd31da-21a7-55ed-8cbd-8f0c7efb974e', 'Robótica'),
+('379630ae-89f3-5ddc-9d4f-bdd307319bcd', 'Seguridad minera'),
+('553e9421-e9c7-56a9-98b3-0097b968795e', 'Salud pública'),
+('9d72ed21-7119-56c0-bd85-7cec3db85d9e', 'Salud comunitaria'),
+('89526843-78da-5c4f-a3b1-09c58bf3d47c', 'Ortodoncia'),
+('96a1ee35-5f8f-52c0-96e4-3e54f47fa2bb', 'Neuropsicología'),
+('3b89701d-42b9-5d54-bf4e-758764d999ee', 'Bases de datos'),
+('95f898f1-e3ff-577d-862c-33a1262ea2ee', 'Visión computacional'),
+('26c5abd9-b5b5-5564-a833-572990adff0c', 'Gestión de la calidad'),
+('16e96edd-a55e-5971-a253-8c3b5b0107a4', 'Ingeniería sísmica'),
+('faf315fa-fa81-50b0-93b1-be5f7d50e833', 'Calidad del aire'),
+('284a4a18-3a25-544a-900f-8d7d6a066b0d', 'Dispositivos médicos'),
+('d0d6d6db-bc6a-550f-957a-3397513472f4', 'Sistemas embebidos'),
+('8a1c8253-0696-5b0e-9b7b-3fe16f75fa1b', 'Geomecánica'),
+('27c04912-6366-57d2-b1da-8bac4d7be227', 'Salud pública'),
+('a33ae167-6584-5446-864a-604e210b67bf', 'Gestión hospitalaria'),
+('e87228bb-8bad-5c58-8638-71be118c2c12', 'Ortodoncia'),
+('19235c0c-7f64-5acd-8545-7a2780fa00ec', 'Neuropsicología'),
+('ac82b641-81d5-586c-9c16-a5ff1a813bd0', 'Derecho ambiental');
+
+INSERT INTO historico_publication_status (uuid, publication_status) VALUES
+('497996b7-4c96-52e4-942a-136a548a6bd0', 'Published'),
+('1af764bb-2ec4-51f3-8fe4-73f3fb836b2f', 'Published'),
+('faf986d8-a752-5707-9399-775fd3b27034', 'Published'),
+('4569c6cd-4b89-5e0d-b7e4-e52983d27605', 'Published'),
+('84b7e3c9-57fe-5358-ada8-0c7c77b0b2c9', 'Published'),
+('377296b1-1063-5a80-8d7c-72fc82cff6ec', 'Published'),
+('f0d96242-d888-5067-a229-25c4933fe3c7', 'Published'),
+('2f47ba36-b502-5ec6-9653-857fc5902fee', 'Published'),
+('79096706-f076-5cfe-8324-9b2acf5fdf6c', 'Accepted/In press'),
+('f29e58ba-bd0a-5583-88c3-4e16a1472ab4', 'Published'),
+('9292d414-bd67-5857-aabd-dc5fb3882d14', 'Published'),
+('c812175b-1b7b-593d-9bff-099978c05982', 'Published'),
+('36c994e1-f729-5acd-909c-be594686e3f1', 'Published'),
+('fee4517c-4b26-5e68-9081-cd05860f8e14', 'Accepted/In press'),
+('056038b9-8cb7-59a5-b1a7-fb2aa5acba59', 'Accepted/In press'),
+('246f5999-3b1a-549a-8cd1-9998ddd448d7', 'Accepted/In press'),
+('8309f9d4-941e-55b6-95b3-5a07e78d926f', 'Published'),
+('e947bb86-bdad-53dc-bd44-1009e4edba7a', 'Published'),
+('04d6d30c-9e3f-5c19-b738-9ae1fa55299a', 'Accepted/In press'),
+('0254529b-2c33-5ab1-b7a8-3ff98142f249', 'Published'),
+('f593c2be-1a11-58f0-a247-7bc3365c6189', 'Published'),
+('248298ec-f01f-5127-8f21-eeb8d90aeba7', 'Published'),
+('124f1c6e-d448-5c45-8f93-4e0dc83d7495', 'Published'),
+('edd5aa9e-e294-50ed-987d-46422146358e', 'Published'),
+('fb7d4efe-21ea-5b5e-9bf1-a1d1402ddc26', 'Published'),
+('a2086d85-6f92-5351-94b8-794238b864cb', 'Published'),
+('11fd31da-21a7-55ed-8cbd-8f0c7efb974e', 'Published'),
+('379630ae-89f3-5ddc-9d4f-bdd307319bcd', 'Accepted/In press'),
+('553e9421-e9c7-56a9-98b3-0097b968795e', 'Published'),
+('9d72ed21-7119-56c0-bd85-7cec3db85d9e', 'Published'),
+('89526843-78da-5c4f-a3b1-09c58bf3d47c', 'Published'),
+('96a1ee35-5f8f-52c0-96e4-3e54f47fa2bb', 'Accepted/In press'),
+('3b89701d-42b9-5d54-bf4e-758764d999ee', 'Published'),
+('95f898f1-e3ff-577d-862c-33a1262ea2ee', 'Published'),
+('26c5abd9-b5b5-5564-a833-572990adff0c', 'Published'),
+('16e96edd-a55e-5971-a253-8c3b5b0107a4', 'Published'),
+('faf315fa-fa81-50b0-93b1-be5f7d50e833', 'Published'),
+('284a4a18-3a25-544a-900f-8d7d6a066b0d', 'Accepted/In press'),
+('d0d6d6db-bc6a-550f-957a-3397513472f4', 'Published'),
+('8a1c8253-0696-5b0e-9b7b-3fe16f75fa1b', 'Published'),
+('27c04912-6366-57d2-b1da-8bac4d7be227', 'Published'),
+('a33ae167-6584-5446-864a-604e210b67bf', 'Accepted/In press'),
+('e87228bb-8bad-5c58-8638-71be118c2c12', 'Published'),
+('19235c0c-7f64-5acd-8545-7a2780fa00ec', 'Published'),
+('ac82b641-81d5-586c-9c16-a5ff1a813bd0', 'Published');
+
+INSERT INTO cuenta_administrador (correo_elec, nombre, password_hash) VALUES
+('admin@portalcris.pe', 'Administrador de demostración', 'pbkdf2_sha256$200000$8c6976e5b5410415bde908bd4dee15df$e4ee99e3223f9ed883a2720343fca3b43ba52ef8fc3af9228a7b66573dcdb771');
+
+COMMIT;
+
+-- 2c. OPERACIONES DE DEMOSTRACIÓN MEDIANTE PROCEDIMIENTOS ---------------------
+-- Cuentas de investigador en distintos estados y ejemplos de borrado lógico.
+BEGIN;
+
+CALL sp_crear_solicitud_investigador('72345601', 2025100001, 'investigador.aprobado@ucsm.edu.pe', 'pbkdf2_sha256$200000$89270a50341bb8e83734ee062603c63c$c51446b550163134cccae42851bb40c279b6edcb47047b59b1057d347b8171c1', '{"dni": "72345601", "codigo_ucsm": "2025100001", "correo": "investigador.aprobado@ucsm.edu.pe", "nombres": "Natalia Isabel", "apellido_paterno": "Fuentes", "apellido_materno": "Ríos", "genero": "Femenino", "fecha_nacimiento": "1991-09-14", "escuela": "Ingeniería de Sistemas", "celular": "987650001", "orcid": "0021-0000-0000-0011", "scopus_id": null, "link_cti": "https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/72345601", "resumen": "Investigador(a) de Ingeniería de Sistemas interesado(a) en analítica de datos.", "foto": "perfil_2025100001.jpg", "ods": ["ODS 4: Educación de calidad", "ODS 9: Industria, innovación e infraestructura"], "intereses": ["Analítica de datos", "Educación virtual"]}'::jsonb);
+CALL sp_crear_solicitud_investigador('72345602', 2025100002, 'investigador.observado@ucsm.edu.pe', 'pbkdf2_sha256$200000$89270a50341bb8e83734ee062603c63c$c51446b550163134cccae42851bb40c279b6edcb47047b59b1057d347b8171c1', '{"dni": "72345602", "codigo_ucsm": "2025100002", "correo": "investigador.observado@ucsm.edu.pe", "nombres": "Mauricio Javier", "apellido_paterno": "Ordóñez", "apellido_materno": "Vela", "genero": "Masculino", "fecha_nacimiento": "1987-03-02", "escuela": "Ingeniería Ambiental", "celular": "987650002", "orcid": "0021-0000-0000-1014", "scopus_id": null, "link_cti": "https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/72345602", "resumen": "Investigador(a) de Ingeniería Ambiental interesado(a) en calidad del agua.", "foto": "perfil_2025100002.jpg", "ods": ["ODS 6: Agua limpia y saneamiento"], "intereses": ["Calidad del agua"]}'::jsonb);
+CALL sp_crear_solicitud_investigador('72345603', 2025100003, 'investigador.pendiente@ucsm.edu.pe', 'pbkdf2_sha256$200000$89270a50341bb8e83734ee062603c63c$c51446b550163134cccae42851bb40c279b6edcb47047b59b1057d347b8171c1', '{"dni": "72345603", "codigo_ucsm": "2025100003", "correo": "investigador.pendiente@ucsm.edu.pe", "nombres": "Camila Andrea", "apellido_paterno": "Medina", "apellido_materno": "Soto", "genero": "Femenino", "fecha_nacimiento": "1994-12-21", "escuela": "Psicología", "celular": "987650003", "orcid": "0021-0000-0000-2017", "scopus_id": null, "link_cti": "https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/72345603", "resumen": "Investigador(a) de Psicología interesado(a) en salud mental universitaria.", "foto": "perfil_2025100003.jpg", "ods": ["ODS 3: Salud y bienestar"], "intereses": ["Salud mental universitaria"]}'::jsonb);
+
+DO $$
+DECLARE v_id BIGINT;
+BEGIN
+  SELECT s.id INTO v_id FROM solicitud_investigador s
+    JOIN cuenta_investigador c ON c.id = s.cuenta_investigador_id
+   WHERE c.correo_elec = 'investigador.aprobado@ucsm.edu.pe';
+  CALL sp_resolver_solicitud_investigador(v_id, 1000234567, 'aprobada');
+  SELECT s.id INTO v_id FROM solicitud_investigador s
+    JOIN cuenta_investigador c ON c.id = s.cuenta_investigador_id
+   WHERE c.correo_elec = 'investigador.observado@ucsm.edu.pe';
+  CALL sp_observar_solicitud_investigador(v_id, 1000234567, 'Adjunte un enlace de CTI Vitae actualizado y revise el número de celular.');
+END $$;
+
+-- Borrado lógico de ejemplo (los registros quedan en la base con activo = FALSE).
+CALL sp_eliminar_investigador(2011485872, 'Cese de vínculo laboral con la universidad');
+CALL sp_eliminar_investigador(2020603329, 'Solicitud del propio investigador');
+CALL sp_eliminar_patente('PE-417849', 'Registro duplicado en otra oficina');
+CALL sp_eliminar_historico('ac82b641-81d5-586c-9c16-a5ff1a813bd0', 'Publicación retirada por la editorial');
+CALL sp_eliminar_historico('19235c0c-7f64-5acd-8545-7a2780fa00ec', 'Registro sin autoría institucional');
+
+-- Reporte del último mes con todos los datos.
+CALL sp_generar_reporte('2026-10-31', 1000234567);
+
 COMMIT;
 --------------------------------------------------------------------------------
--- 3. CONSULTAS DE REFERENCIA (solo lectura)
+-- 3. CONSULTAS (REPORTES)
 --------------------------------------------------------------------------------
--- 1. Total de investigadores
-SELECT COUNT(*) AS total_investigadores_unicos
-FROM investigador;
-
--- 2. Escuelas profesionales con mas investigadores
-SELECT escuela_profesional, COUNT(*) AS total_miembros
-FROM investigador
-GROUP BY escuela_profesional
-ORDER BY total_miembros DESC;
-
--- 3. Directorio de investigadores con datos personales
-SELECT i.codigo_ucsm,
-       CONCAT(p.apellido_paterno, ' ', p.apellido_materno, ', ', p.nombres) AS nombre_completo,
-       p.dni, p.genero, i.correo_elec, i.n_celular, i.escuela_profesional
-FROM investigador i
-JOIN persona p ON i.dni = p.dni;
-
--- 4. Investigadores sin patentes asociadas
-SELECT i.codigo_ucsm, p.nombres, p.apellido_paterno
-FROM investigador i
-JOIN persona p ON i.dni = p.dni
-LEFT JOIN formato_investigador fi ON i.codigo_ucsm = fi.codigo_ucsm
-LEFT JOIN formato_patente_investigador fpi ON fi.n_formato_inv = fpi.n_formato_inv
-WHERE fpi.n_formato_pat IS NULL;
-
--- 5. Evolucion de publicaciones por año
-SELECT publication_year, COUNT(*) AS total_publicaciones
-FROM historico
-GROUP BY publication_year
-ORDER BY publication_year ASC;
-
--- 6. Produccion por tipo de documento
-SELECT type, COUNT(*) AS cantidad
-FROM historico
-GROUP BY type
-ORDER BY cantidad DESC;
-
--- 7. Publicaciones recientes por fecha de creacion
-SELECT uuid, title, publication_year, create_date, portal_url
-FROM historico
-WHERE create_date IS NOT NULL
-ORDER BY create_date DESC
-LIMIT 10;
-
--- 8. Publicaciones por idioma
-SELECT language, COUNT(*) AS total
-FROM historico
-GROUP BY language
-ORDER BY total DESC;
-
--- 9. Reportes generados por coordinador
-SELECT c.codigo_ucsm, p.nombres, p.apellido_paterno, COUNT(r.dia) AS total_reportes_emitidos
-FROM coordinador_repositorios c
-JOIN persona p ON c.dni = p.dni
-LEFT JOIN reporte r ON c.codigo_ucsm = r.codigo_ucsm_coordinador
-GROUP BY c.codigo_ucsm, p.nombres, p.apellido_paterno;
-
--- 10. Enlaces de cada publicacion
-SELECT h.title, l.link_type, l.url, l.description
-FROM historico h
-JOIN historico_links l ON h.uuid = l.uuid;
-
--- 11. Formatos de investigador asociados a cada ODS
-SELECT ods, COUNT(*) AS total_asociaciones
-FROM formato_inv_ods
-GROUP BY ods
-ORDER BY total_asociaciones DESC;
-
--- 12. Patentes por pais de registro y editorial
-SELECT pais, editorial, COUNT(*) AS total_patentes
-FROM patente
-GROUP BY pais, editorial
-ORDER BY total_patentes DESC;
-
--- 13. Investigadores con sus ODS vinculados
-SELECT i.codigo_ucsm,
-       p.apellido_paterno || ' ' || p.apellido_materno || ', ' || p.nombres AS investigador,
-       i.escuela_profesional,
-       string_agg(o.ods, ' | ' ORDER BY o.ods) AS ods_vinculados
-FROM investigador i
-JOIN persona p ON p.dni = i.dni
-JOIN formato_investigador fi ON fi.codigo_ucsm = i.codigo_ucsm
-JOIN formato_inv_ods o ON o.n_formato_inv = fi.n_formato_inv
-GROUP BY i.codigo_ucsm, p.apellido_paterno, p.apellido_materno, p.nombres, i.escuela_profesional
-ORDER BY investigador;
-
--- 14. Patentes con sus inventores registrados
-SELECT pa.n_patente, pa.titulo_patente, pa.pais,
-       p.apellido_paterno || ' ' || p.apellido_materno || ', ' || p.nombres AS inventor,
-       i.escuela_profesional
-FROM patente pa
-JOIN formato_patente fp ON fp.n_patente = pa.n_patente
-JOIN formato_patente_investigador fpi ON fpi.n_formato_pat = fp.n_formato_pat
-JOIN formato_investigador fi ON fi.n_formato_inv = fpi.n_formato_inv
-JOIN investigador i ON i.codigo_ucsm = fi.codigo_ucsm
-JOIN persona p ON p.dni = i.dni
-ORDER BY pa.fecha_registro DESC, pa.n_patente;
-
--- 15. Formatos de investigador y coordinador que los valida
-SELECT fi.n_formato_inv,
-       pinv.apellido_paterno || ' ' || pinv.apellido_materno || ', ' || pinv.nombres AS investigador,
-       pcoo.apellido_paterno || ' ' || pcoo.apellido_materno || ', ' || pcoo.nombres AS coordinador_validador,
-       c.funcion
-FROM formato_investigador fi
-JOIN investigador i ON i.codigo_ucsm = fi.codigo_ucsm
-JOIN persona pinv ON pinv.dni = i.dni
-JOIN coordinador_repositorios c ON c.codigo_ucsm = fi.codigo_ucsm_coordinador
-JOIN persona pcoo ON pcoo.dni = c.dni
-ORDER BY coordinador_validador, investigador;
+-- Las 15 consultas del aplicativo están implementadas como procedimientos
+-- (sp_reporte_01 ... sp_reporte_15, Bloque F). Ejemplo de uso en psql:
+--   BEGIN;
+--   CALL sp_reporte_03('reporte');
+--   FETCH ALL FROM reporte;
+--   COMMIT;

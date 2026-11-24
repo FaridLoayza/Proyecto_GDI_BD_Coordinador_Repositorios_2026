@@ -80,10 +80,23 @@ def escalar(sql, parametros=None):
     return ejecutar_consulta(sql, parametros)[1][0][0]
 
 
+def borrar_patente(n_patente):
+    """Borrado FISICO para limpiar las pruebas (sp_eliminar_patente es logico).
+    Dispara trg_patente_antes_borrar, que elimina el formato y sus hijos."""
+    ejecutar_sentencia("DELETE FROM patente WHERE n_patente = %s", (n_patente,))
+
+
+def borrar_investigador(codigo):
+    """Borrado FISICO para limpiar las pruebas (sp_eliminar_investigador es logico).
+    Dispara trg_investigador_antes_borrar, que elimina su formato."""
+    ejecutar_sentencia("DELETE FROM investigador_historico WHERE codigo_ucsm = %s", (codigo,))
+    ejecutar_sentencia("DELETE FROM investigador WHERE codigo_ucsm = %s", (codigo,))
+
+
 def limpiar_cris():
     """Limpia las filas ficticias del flujo CRIS antes y después de sus pruebas."""
     if escalar("SELECT EXISTS (SELECT 1 FROM patente WHERE n_patente = %s)", (CRIS_PAT,)):
-        patentes.eliminar(CRIS_PAT)
+        borrar_patente(CRIS_PAT)
 
     ejecutar_sentencia(
         "DELETE FROM revision_solicitud_patente "
@@ -140,7 +153,7 @@ def limpiar_cris():
 
     if escalar("SELECT EXISTS (SELECT 1 FROM investigador WHERE codigo_ucsm = %s)",
                (CRIS_COD,)):
-        investigadores.eliminar(CRIS_COD)
+        borrar_investigador(CRIS_COD)
     ejecutar_sentencia(
         "DELETE FROM cuenta_investigador WHERE codigo_ucsm = %s", (CRIS_COD,))
     ejecutar_sentencia("DELETE FROM persona WHERE dni = %s", (CRIS_DNI,))
@@ -148,14 +161,14 @@ def limpiar_cris():
     _, publicaciones = ejecutar_consulta(
         "SELECT uuid FROM historico WHERE title = %s", (CRIS_TITULO_HIS,))
     for (uuid,) in publicaciones:
-        historico.eliminar(uuid)
+        ejecutar_sentencia("DELETE FROM historico WHERE uuid = %s", (uuid,))
 
 
 def limpiar():
     """Borra todo lo que crean las pruebas (tambien restos de una ejecucion anterior fallida)."""
     pasos = (
-        lambda: patentes.eliminar(PAT),
-        lambda: investigadores.eliminar(COD),
+        lambda: borrar_patente(PAT),
+        lambda: borrar_investigador(COD),
         lambda: ejecutar_sentencia("DELETE FROM historico WHERE title LIKE %s", (TITULO_HIS + "%",)),
         lambda: ejecutar_sentencia("DELETE FROM reporte WHERE dia = 1 AND mes = 1 AND anio = 2000"),
         lambda: ejecutar_sentencia("DELETE FROM coordinador_repositorios WHERE codigo_ucsm = %s", (COD_RET,)),
