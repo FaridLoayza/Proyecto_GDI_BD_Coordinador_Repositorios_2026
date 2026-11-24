@@ -1,6 +1,7 @@
 backend/config.ini
 backend/static/uploads/*
 !backend/static/uploads/.gitkeep
+project_context/
 __pycache__/
 *.py[cod]
 *$py.class

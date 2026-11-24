@@ -1,4 +1,4 @@
-"""Acceso a solicitudes de patente del portal CRIS."""
+"""Acceso a solicitudes de patente del Gestor de Investigación."""
 from ..db.conexion import consultar_dicts, ejecutar_procedimiento
 
 

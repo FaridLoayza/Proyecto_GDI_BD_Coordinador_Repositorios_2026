@@ -3,12 +3,11 @@
 Uso, desde la raíz del proyecto:
     python backend/database/crear_admin.py
 
-Con el ejecutable de Windows:  PortalCRIS.exe --crear-admin
+Con el ejecutable de Windows:  GestorInvestigacion.exe --crear-admin
 
 Pide correo, nombre y contraseña por consola (la contraseña no se muestra).
 Si el correo ya existe, actualiza el nombre y la contraseña y reactiva la cuenta.
-Requiere la tabla cuenta_administrador (instalación nueva o
-migracion_cuenta_administrador.sql).
+Requiere la tabla cuenta_administrador creada por la instalación desde cero.
 """
 import os
 import sys

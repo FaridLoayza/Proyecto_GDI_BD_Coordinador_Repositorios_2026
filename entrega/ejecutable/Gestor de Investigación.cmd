@@ -1,6 +1,6 @@
 @echo off
 rem ==========================================================================
-rem  Portal CRIS - archivo de inicio
+rem  Gestor de Investigación - archivo de inicio
 rem  Inicia el sistema desde la carpeta donde esta este archivo (%~dp0), por lo
 rem  que funciona aunque la carpeta se copie a otro equipo o a otra ruta.
 rem ==========================================================================
@@ -12,4 +12,4 @@ if not exist "%~dp0config.ini" (
   pause
   exit /b 1
 )
-start "Portal CRIS" "%~dp0PortalCRIS.exe"
+start "Gestor de Investigación" "%~dp0GestorInvestigacion.exe"

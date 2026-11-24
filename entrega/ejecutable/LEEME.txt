@@ -1,15 +1,15 @@
-﻿PORTAL CRIS - Grupo 01
+﻿GESTOR DE INVESTIGACIÓN - Grupo 01
 Sistema para el registro de investigadores, patentes y publicaciones, con
 revision por parte del coordinador de repositorios.
 
 CONTENIDO DE ESTA CARPETA
-  PortalCRIS.exe            Ejecutable del sistema (servidor + interfaz web).
-  Portal CRIS.cmd           Archivo de inicio: abre el sistema desde esta carpeta.
-  Portal CRIS.url           Acceso directo a la direccion del sistema
+  GestorInvestigacion.exe   Ejecutable del sistema (servidor + interfaz web).
+  Gestor de Investigación.cmd  Archivo de inicio: abre el sistema desde esta carpeta.
+  Gestor de Investigación.url  Acceso directo a la direccion del sistema
                             (http://127.0.0.1:8000) una vez iniciado.
   config.ini.example        Plantilla de configuracion.
   CREDENCIALES_PRUEBA.txt   Cuentas de prueba (coordinador, investigadores, admin).
-  sql\                      Script completo de la base de datos y migraciones.
+  base_datos_repositorio.sql Script completo de la base de datos.
 
 REQUISITOS
   - Windows 10 u 11 (64 bits).
@@ -22,29 +22,24 @@ INSTALACION (solo la primera vez)
   1. Copie config.ini.example como config.ini (en esta misma carpeta) y en la
      seccion [postgresql] escriba la contrasena de su usuario postgres.
   2. Abra una ventana de comandos en esta carpeta y ejecute:
-         PortalCRIS.exe --instalar-bd
+         GestorInvestigacion.exe --instalar-bd
      Se crea la base bd_coordinador_repositorios con todas las tablas,
      procedimientos, triggers y datos de prueba.
-     (Alternativa: ejecutar sql\base_datos_repositorio.sql con psql o pgAdmin.)
+     (Alternativa: ejecutar base_datos_repositorio.sql con psql o pgAdmin.)
   3. Opcional - login con ORCID: complete la seccion [orcid] de config.ini con
      las credenciales de la aplicacion registrada en sandbox.orcid.org, usando
          redirect_uri = http://127.0.0.1:8000/api/auth/orcid/callback
 
 USO
-  1. Haga doble clic en "Portal CRIS.cmd" (o en PortalCRIS.exe).
+  1. Haga doble clic en "Gestor de Investigación.cmd" (o en GestorInvestigacion.exe).
      Se abre una ventana negra (el servidor) y el navegador en
-     http://127.0.0.1:8000. Si el navegador no se abre, use "Portal CRIS.url".
+     http://127.0.0.1:8000. Si el navegador no se abre, use "Gestor de Investigación.url".
   2. Ingrese con las cuentas de CREDENCIALES_PRUEBA.txt.
   3. Para cerrar el sistema: cierre la sesion en el portal y luego cierre la
      ventana negra del servidor.
-
-BASE YA INSTALADA CON UNA VERSION ANTERIOR
-  Ejecute una sola vez, en este orden, los scripts de la carpeta sql que no haya
-  aplicado: migracion_scopus_opcional.sql, migracion_cuenta_administrador.sql y
-  migracion_entrega5.sql.
 
 PROBLEMAS FRECUENTES
   - "No se encontro config.ini": complete el paso 1 de la instalacion.
   - "No se pudo conectar a PostgreSQL": verifique que el servicio de PostgreSQL
     este iniciado y que la contrasena de config.ini sea la correcta.
-  - El puerto 8000 esta ocupado: cierre otra ventana de Portal CRIS abierta.
+  - El puerto 8000 esta ocupado: cierre otra ventana del Gestor de Investigación.

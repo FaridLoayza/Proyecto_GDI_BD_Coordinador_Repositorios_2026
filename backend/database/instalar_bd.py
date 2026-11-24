@@ -1,6 +1,6 @@
 """Instala desde cero el esquema CRIS y los datos de prueba.
 
-Uso:  python backend/database/instalar_bd.py      (o  PortalCRIS.exe --instalar-bd)
+Uso:  python backend/database/instalar_bd.py      (o  GestorInvestigacion.exe --instalar-bd)
 
 Crea la base 'bd_coordinador_repositorios' si no existe y luego instala el esquema.
 """
@@ -9,7 +9,7 @@ import sys
 
 import psycopg2
 
-try:  # dentro de PortalCRIS.exe (o importado como paquete desde la raiz)
+try:  # dentro de GestorInvestigacion.exe (o importado como paquete desde la raiz)
     from backend.src.db.conexion import ErrorConexion, conectar, leer_configuracion
 except ImportError:  # python backend/database/instalar_bd.py
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))

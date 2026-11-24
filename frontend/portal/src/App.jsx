@@ -111,16 +111,16 @@ function useAuth() {
 
 function Brand() {
   return (
-    <Link className="brand" to="/" aria-label="Portal CRIS, inicio">
-      <img className="brand-logo" src="/assets/cris-horizontal.png" alt="CRIS" />
+    <Link className="brand" to="/" aria-label="Gestor de Investigación, inicio">
+      <img className="brand-logo" src="/assets/cris-horizontal.png" alt="Gestor de Investigación" />
     </Link>
   )
 }
 
 function SidebarBrand({ to }) {
   return (
-    <Link className="sidebar-brand" to={to} aria-label="Portal CRIS, inicio">
-      <img src="/assets/cris-horizontal-claro.png" alt="Sistema Institucional de Investigación CRIS" />
+    <Link className="sidebar-brand" to={to} aria-label="Gestor de Investigación, inicio">
+      <img src="/assets/cris-horizontal-claro.png" alt="Gestor de Investigación" />
     </Link>
   )
 }
@@ -203,7 +203,7 @@ function Home() {
     <section className="home">
       <div className="hero">
         <p className="eyebrow">Sistema de información de investigación</p>
-        <h1>Portal CRIS</h1>
+        <h1>Gestor de Investigación</h1>
       </div>
       <div className="access-grid">
         <article className="access-card">

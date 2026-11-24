@@ -62,8 +62,8 @@ def autenticar(correo, clave, cfg=None):
     except ErrorOperacion as exc:
         if "cuenta_administrador" in str(exc):
             raise ErrorOperacion(
-                "La cuenta de administrador no está instalada. Ejecute "
-                "migracion_cuenta_administrador.sql y crear_admin.py.") from exc
+                "La cuenta de administrador no está instalada. Reinstale el esquema "
+                "desde cero y luego ejecute crear_admin.py.") from exc
         raise
     if not filas or not verificar(clave, filas[0]["password_hash"]):
         raise ErrorOperacion("Correo o contraseña incorrectos.")
@@ -102,9 +102,9 @@ def guardar_admin(correo, nombre, clave, cfg=None):
 
 
 def crear_admin_interactivo():
-    """Pide los datos por consola. Lo usan crear_admin.py y PortalCRIS.exe --crear-admin."""
+    """Pide los datos por consola. Lo usan crear_admin.py y GestorInvestigacion.exe --crear-admin."""
     import getpass
-    print("Crear cuenta de administrador del Portal CRIS")
+    print("Crear cuenta de administrador del Gestor de Investigación")
     correo = input("Correo: ").strip()
     nombre = input("Nombre: ").strip()
     clave = getpass.getpass("Contraseña (mínimo 12 caracteres): ")

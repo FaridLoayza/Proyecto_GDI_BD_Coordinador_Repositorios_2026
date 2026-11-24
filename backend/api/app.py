@@ -1,4 +1,4 @@
-"""FastAPI para la aplicación React del portal CRIS."""
+"""FastAPI para la aplicación React del Gestor de Investigación."""
 import configparser
 import hmac
 import logging
@@ -142,7 +142,7 @@ def _session_secret():
     return secrets.token_urlsafe(48)
 
 
-app = FastAPI(title="Portal CRIS", version="1.2.0")
+app = FastAPI(title="Gestor de Investigación", version="1.2.0")
 app.add_middleware(
     SessionMiddleware,
     secret_key=_session_secret(),
