@@ -12,14 +12,14 @@ from src.db.conexion import ErrorConexion, ejecutar_consulta, leer_configuracion
 TABLAS_ESPERADAS = 42
 INDICES_ESPERADOS = 21
 TABLAS_CRIS = (
-    "cuenta_investigador", "solicitud_investigador",
+    "cuenta_usuario", "solicitud_investigador",
     "solicitud_investigador_ods", "solicitud_investigador_interes",
     "solicitud_investigador_version", "revision_solicitud",
     "verificacion_solicitud", "integracion_ejecucion",
     "publicacion_candidata", "publicacion_candidata_investigador",
     "investigador_historico", "solicitud_patente",
     "solicitud_patente_investigador", "solicitud_patente_ocde",
-    "revision_solicitud_patente",
+    "uso_suscripcion",
 )
 PROCEDIMIENTOS_CRIS = (
     "sp_crear_solicitud_investigador", "sp_actualizar_solicitud_investigador",

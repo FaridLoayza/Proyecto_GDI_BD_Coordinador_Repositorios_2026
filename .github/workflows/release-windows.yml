@@ -75,7 +75,8 @@ jobs:
           New-Item -ItemType Directory -Path $carpeta -Force
           Copy-Item dist/GestorInvestigacion.exe $carpeta/
           Copy-Item backend/config.ini.example $carpeta/
-          Copy-Item "entrega/ejecutable/*" $carpeta/
+          Copy-Item "empaquetado/*" $carpeta/
+          Copy-Item backend/database/ejemplos/reporte_counter5_PR_2026_ejemplo.json $carpeta/
           Copy-Item CREDENCIALES_PRUEBA.md "$carpeta/CREDENCIALES_PRUEBA.txt"
           Copy-Item backend/database/base_datos_repositorio.sql "$carpeta/"
           Compress-Archive -Path $carpeta -DestinationPath "$carpeta.zip"

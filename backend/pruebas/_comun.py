@@ -99,7 +99,7 @@ def limpiar_cris():
         borrar_patente(CRIS_PAT)
 
     ejecutar_sentencia(
-        "DELETE FROM revision_solicitud_patente "
+        "DELETE FROM revision_solicitud "
         "WHERE solicitud_patente_id IN (SELECT id FROM solicitud_patente WHERE n_patente = %s)",
         (CRIS_PAT,))
     ejecutar_sentencia(
@@ -124,7 +124,7 @@ def limpiar_cris():
 
     solicitud_ids = (
         "SELECT s.id FROM solicitud_investigador s "
-        "JOIN cuenta_investigador c ON c.id = s.cuenta_investigador_id "
+        "JOIN cuenta_usuario c ON c.id = s.cuenta_investigador_id "
         "WHERE c.codigo_ucsm = %s"
     )
     ejecutar_sentencia(
@@ -148,14 +148,14 @@ def limpiar_cris():
         (CRIS_COD,))
     ejecutar_sentencia(
         f"DELETE FROM solicitud_investigador WHERE cuenta_investigador_id IN "
-        f"(SELECT id FROM cuenta_investigador WHERE codigo_ucsm = %s)",
+        f"(SELECT id FROM cuenta_usuario WHERE codigo_ucsm = %s)",
         (CRIS_COD,))
 
     if escalar("SELECT EXISTS (SELECT 1 FROM investigador WHERE codigo_ucsm = %s)",
                (CRIS_COD,)):
         borrar_investigador(CRIS_COD)
     ejecutar_sentencia(
-        "DELETE FROM cuenta_investigador WHERE codigo_ucsm = %s", (CRIS_COD,))
+        "DELETE FROM cuenta_usuario WHERE codigo_ucsm = %s", (CRIS_COD,))
     ejecutar_sentencia("DELETE FROM persona WHERE dni = %s", (CRIS_DNI,))
 
     _, publicaciones = ejecutar_consulta(

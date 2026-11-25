@@ -1,6 +1,9 @@
 """FastAPI para la aplicación React del Gestor de Investigación."""
 import configparser
+import csv
+import datetime
 import hmac
+import io
 import logging
 import os
 import secrets
@@ -11,7 +14,7 @@ from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -26,11 +29,11 @@ from ..src.repositorios import (
     publicaciones_candidatas,
     reportes,
 )
-from ..src.repositorios import solicitudes_investigador
+from ..src.repositorios import solicitudes_investigador, uso_suscripciones
 from ..src.repositorios.catalogos import ESCUELAS_UCSM, GENEROS, ODS
-from . import orcid
-from . import pure_csv
+from . import counter, orcid, pure_csv, sushi
 from .schemas import (
+    SushiSyncBody,
     AdminKeyBody,
     AdminRowBody,
     AdminUpdateBody,
@@ -142,7 +145,7 @@ def _session_secret():
     return secrets.token_urlsafe(48)
 
 
-app = FastAPI(title="Gestor de Investigación", version="1.2.0")
+app = FastAPI(title="Gestor de Investigación", version="1.3.0")
 app.add_middleware(
     SessionMiddleware,
     secret_key=_session_secret(),
@@ -772,6 +775,114 @@ def coordinator_publication(publication_uuid: str, request: Request):
         "formulario": historico.para_formulario(publication),
         **_baja(publication),
     }
+
+
+# --- Histórico: resumen del repositorio y uso de suscripciones (Tarea 2) ----
+
+def _mes(valor, campo):
+    """'AAAA-MM' -> date del primer día del mes (o None)."""
+    if not valor:
+        return None
+    try:
+        return datetime.datetime.strptime(valor, "%Y-%m").date()
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"{campo} debe tener el formato AAAA-MM.") from None
+
+
+@app.get("/api/coordinator/repository/summary")
+def coordinator_repository_summary(request: Request):
+    _user(request, "coordinator")
+    return uso_suscripciones.resumen_repositorio()
+
+
+@app.get("/api/coordinator/usage/options")
+def coordinator_usage_options(request: Request):
+    _user(request, "coordinator")
+    return {**uso_suscripciones.opciones(), "sushi_activo": sushi.configuracion()["listo"]}
+
+
+@app.get("/api/coordinator/usage")
+def coordinator_usage(
+    request: Request,
+    metrica: str = Query(default="Total_Item_Requests", max_length=40),
+    plataforma: list[str] = Query(default=[]),
+    desde: str | None = Query(default=None),
+    hasta: str | None = Query(default=None),
+):
+    _user(request, "coordinator")
+    if metrica not in counter.METRICAS:
+        raise HTTPException(status_code=422, detail="Métrica COUNTER no reconocida.")
+    return uso_suscripciones.serie(metrica, plataforma, _mes(desde, "Desde"), _mes(hasta, "Hasta"))
+
+
+@app.get("/api/coordinator/usage/export.csv")
+def coordinator_usage_export(
+    request: Request,
+    plataforma: list[str] = Query(default=[]),
+    desde: str | None = Query(default=None),
+    hasta: str | None = Query(default=None),
+):
+    _user(request, "coordinator")
+    filas = uso_suscripciones.tabla_exportable(plataforma, _mes(desde, "Desde"), _mes(hasta, "Hasta"))
+    salida = io.StringIO()
+    escritor = csv.writer(salida)
+    escritor.writerow(["plataforma", "proveedor", "periodo", "metrica", "valor"])
+    for fila in filas:
+        escritor.writerow([fila["plataforma"], fila["proveedor"], fila["periodo"], fila["metrica"], fila["valor"]])
+    return Response(
+        content=chr(0xFEFF) + salida.getvalue(),  # BOM: Excel abre el CSV con tildes correctas
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="uso_suscripciones.csv"'},
+    )
+
+
+@app.get("/api/coordinator/usage/imports")
+def coordinator_usage_imports(request: Request):
+    _user(request, "coordinator")
+    return uso_suscripciones.importaciones()
+
+
+async def _counter_upload(file: UploadFile):
+    nombre = file.filename or ""
+    if not nombre.lower().endswith((".json", ".csv", ".tsv", ".txt")):
+        raise HTTPException(status_code=422, detail="Seleccione un reporte COUNTER en formato JSON, CSV o TSV.")
+    contenido = await file.read(counter.MAX_BYTES + 1)
+    try:
+        return counter.parse_counter(contenido, nombre)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.post("/api/coordinator/usage/import/preview", dependencies=[Depends(require_csrf)])
+async def coordinator_usage_preview(request: Request, file: UploadFile = File(...)):
+    _user(request, "coordinator")
+    registros, resumen = await _counter_upload(file)
+    return {**resumen, "muestra": registros[:12]}
+
+
+@app.post("/api/coordinator/usage/import", dependencies=[Depends(require_csrf)])
+async def coordinator_usage_import(request: Request, file: UploadFile = File(...)):
+    current = _user(request, "coordinator")
+    registros, resumen = await _counter_upload(file)
+    resultado = uso_suscripciones.importar(
+        registros, file.filename, current["codigo_ucsm"], resumen["proveedor"])
+    return {**resumen, **resultado}
+
+
+@app.post("/api/coordinator/usage/sushi-sync", dependencies=[Depends(require_csrf)])
+def coordinator_usage_sushi(body: SushiSyncBody, request: Request):
+    current = _user(request, "coordinator")
+    try:
+        contenido = sushi.descargar_pr(body.desde, body.hasta)
+        registros, resumen = counter.parse_counter(contenido, "sushi.json")
+    except sushi.ErrorSushi as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    resultado = uso_suscripciones.importar(
+        registros, f"SUSHI {body.desde} a {body.hasta}", current["codigo_ucsm"],
+        resumen["proveedor"], sistema="sushi")
+    return {**resumen, **resultado}
 
 
 @app.get("/api/coordinator/reports/catalog")

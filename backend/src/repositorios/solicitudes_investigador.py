@@ -8,7 +8,7 @@ from ..seguridad import generar_hash, verificar
 _SQL_AUTENTICAR = """
 SELECT c.id, c.dni, c.codigo_ucsm, c.correo_elec, c.password_hash,
        c.estado_cuenta, s.id AS solicitud_id, s.estado
-FROM cuenta_investigador c
+FROM cuenta_usuario c
 JOIN LATERAL (
     SELECT id, estado
       FROM solicitud_investigador
@@ -39,7 +39,7 @@ SELECT s.id, s.cuenta_investigador_id, c.dni, c.codigo_ucsm, c.correo_elec,
             ORDER BY r.resuelto_en DESC, r.id DESC LIMIT 1
        ) AS ultima_observacion
 FROM solicitud_investigador s
-JOIN cuenta_investigador c ON c.id = s.cuenta_investigador_id
+JOIN cuenta_usuario c ON c.id = s.cuenta_investigador_id
 """
 
 
@@ -137,7 +137,7 @@ def listar():
                s.nombres, s.apellido_paterno, s.apellido_materno, s.codigo_orcid,
                s.scopus_id, s.version_actual
           FROM solicitud_investigador s
-          JOIN cuenta_investigador c ON c.id = s.cuenta_investigador_id
+          JOIN cuenta_usuario c ON c.id = s.cuenta_investigador_id
          WHERE s.estado IN ('pendiente_revision', 'observada')
          ORDER BY CASE s.estado WHEN 'pendiente_revision' THEN 0 ELSE 1 END,
                   s.enviada_en, s.id

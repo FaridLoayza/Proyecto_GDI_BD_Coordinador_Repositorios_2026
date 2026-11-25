@@ -408,3 +408,8 @@ class AdminKeyBody(StrictModel):
 class BajaBody(StrictModel):
     """Motivo opcional del borrado lógico."""
     motivo: str | None = Field(default=None, max_length=255)
+
+
+class SushiSyncBody(StrictModel):
+    desde: str = Field(pattern=r"^[0-9]{4}-(0[1-9]|1[0-2])$")
+    hasta: str = Field(pattern=r"^[0-9]{4}-(0[1-9]|1[0-2])$")

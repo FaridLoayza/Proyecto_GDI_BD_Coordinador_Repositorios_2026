@@ -19,7 +19,7 @@ if getattr(sys, "frozen", False):  # el script SQL viaja empaquetado dentro del 
     SCRIPT = os.path.join(sys._MEIPASS, "backend", "database", "base_datos_repositorio.sql")
 else:
     SCRIPT = os.path.join(os.path.dirname(__file__), "base_datos_repositorio.sql")
-TABLAS_ESPERADAS = 43
+TABLAS_ESPERADAS = 42
 # Se puede instalar en otra base (por ejemplo, para pruebas) con PORTAL_DB_NAME.
 NOMBRE_BASE = os.getenv("PORTAL_DB_NAME", "bd_coordinador_repositorios")
 BASE_ADMINISTRATIVA = "postgres"  # base que siempre existe; desde aqui se crea NOMBRE_BASE

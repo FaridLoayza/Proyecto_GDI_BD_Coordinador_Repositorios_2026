@@ -30,7 +30,7 @@ def _normalizar(fila):
     fila["revisiones"] = consultar_dicts("""
         SELECT version_evaluada, resultado, datos_evaluados, motivo,
                resuelto_por, resuelto_en
-          FROM revision_solicitud_patente
+          FROM revision_solicitud
          WHERE solicitud_patente_id = %s
          ORDER BY version_evaluada
     """, (fila["id"],))

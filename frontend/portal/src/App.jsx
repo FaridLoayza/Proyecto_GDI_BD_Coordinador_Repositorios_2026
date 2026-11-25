@@ -751,6 +751,211 @@ function CoordinatorPatentRegistry() {
   </div>
 }
 
+// --- Histórico: seguimiento del uso de repositorios (Tarea 2) ---------------
+// Resumen del repositorio, uso de suscripciones de biblioteca (COUNTER 5) e
+// importación de reportes. Los datos de uso son agregados por plataforma y
+// mes: no hay información por estudiante.
+const USO_METRICAS = [
+  ['Total_Item_Requests', 'Descargas y vistas de texto completo'],
+  ['Unique_Item_Requests', 'Documentos únicos consultados'],
+  ['Total_Item_Investigations', 'Interacciones totales (resúmenes, vistas, descargas)'],
+  ['Searches_Platform', 'Búsquedas realizadas'],
+]
+const USO_COLORES = ['#06402b', '#2f8f5b', '#c08a1e', '#3b6fb6', '#8a4fa3', '#b6463b']
+const formatoNumero = (valor) => Number(valor || 0).toLocaleString('es-PE')
+
+function BarList({ items, label, value }) {
+  const max = Math.max(1, ...items.map((item) => Number(item[value])))
+  if (!items.length) return <p className="muted">Sin datos todavía.</p>
+  return <ul className="bar-list">{items.map((item) => <li key={item[label]}>
+    <span className="bar-list-label">{item[label]}</span>
+    <span className="bar-list-track"><span style={{ width: `${(Number(item[value]) / max) * 100}%` }} /></span>
+    <strong>{formatoNumero(item[value])}</strong>
+  </li>)}</ul>
+}
+
+function RepositorySummary({ onGo }) {
+  const { request } = useAuth()
+  const [data, setData] = useState(null)
+  const [error, setError] = useState('')
+  useEffect(() => { request('/api/coordinator/repository/summary').then(setData).catch((problem) => setError(problem.message)) }, [request])
+  if (error) return <Alert kind="error">{error}</Alert>
+  if (!data) return <div className="loading">Cargando resumen…</div>
+  const sync = data.ultima_sincronizacion ? new Date(data.ultima_sincronizacion).toLocaleDateString('es-PE') : '—'
+  return <div className="page-stack">
+    <div className="kpi-grid">
+      <article className="kpi-card"><span className="kpi-icon"><BsClockHistory aria-hidden="true" /></span><strong>{formatoNumero(data.publicaciones)}</strong><span>Publicaciones en el repositorio</span></article>
+      <article className="kpi-card"><span className="kpi-icon"><BsBuildings aria-hidden="true" /></span><strong>{formatoNumero(data.tipos)}</strong><span>Tipos de publicación</span></article>
+      <article className="kpi-card"><span className="kpi-icon"><BsSearch aria-hidden="true" /></span><strong>{formatoNumero(data.uso_total_ultimos_12_meses)}</strong><span>Descargas en suscripciones (12 meses)</span></article>
+      <article className="kpi-card"><span className="kpi-icon"><BsFileEarmarkBarGraph aria-hidden="true" /></span><strong>{sync}</strong><span>Última sincronización con Pure</span></article>
+    </div>
+    <div className="summary-grid">
+      <section className="panel"><h2>Publicaciones por año</h2><BarList items={data.por_anio} label="anio" value="total" /></section>
+      <section className="panel"><h2>Por tipo</h2><BarList items={data.por_tipo} label="tipo" value="total" /></section>
+      <section className="panel"><h2>Por escuela profesional</h2><BarList items={data.por_escuela} label="escuela" value="total" /></section>
+      <section className="panel"><h2>Por ODS</h2><BarList items={data.por_ods} label="ods" value="total" /></section>
+      <section className="panel"><div className="section-title-row"><h2>Plataformas más usadas</h2><button type="button" className="text-link" onClick={() => onGo('uso')}>Ver detalle</button></div><BarList items={data.uso_ultimos_12_meses} label="plataforma" value="total" /></section>
+      <section className="panel"><h2>Reportes</h2><p className="muted">Los reportes del coordinador se generan a partir de este histórico.</p><Link className="button button-primary" to="/coordinator/reports">Generar reporte</Link></section>
+    </div>
+  </div>
+}
+
+function UsageChart({ serie }) {
+  const plataformas = serie.totales.map((item) => item.plataforma)
+  const periodos = serie.periodos
+  if (!periodos.length) return <div className="empty-state">No hay datos de uso para los filtros elegidos.</div>
+  const valor = {}
+  serie.filas.forEach((fila) => { valor[`${fila.plataforma}|${fila.periodo}`] = fila.valor })
+  const max = Math.max(1, ...serie.filas.map((fila) => fila.valor))
+  const ancho = 760, alto = 260, margen = { izq: 56, der: 12, sup: 12, inf: 36 }
+  const x = (i) => margen.izq + (periodos.length === 1 ? 0 : (i / (periodos.length - 1)) * (ancho - margen.izq - margen.der))
+  const y = (v) => alto - margen.inf - (v / max) * (alto - margen.sup - margen.inf)
+  const marcas = [0, 0.25, 0.5, 0.75, 1].map((f) => Math.round(max * f))
+  return <figure className="usage-chart">
+    <svg viewBox={`0 0 ${ancho} ${alto}`} role="img" aria-label="Uso mensual por plataforma">
+      {marcas.map((m) => <g key={m}><line x1={margen.izq} x2={ancho - margen.der} y1={y(m)} y2={y(m)} className="chart-grid" /><text x={margen.izq - 6} y={y(m) + 4} textAnchor="end" className="chart-axis">{formatoNumero(m)}</text></g>)}
+      {periodos.map((p, i) => (periodos.length <= 12 || i % Math.ceil(periodos.length / 12) === 0) && <text key={p} x={x(i)} y={alto - 12} textAnchor="middle" className="chart-axis">{p}</text>)}
+      {plataformas.map((plataforma, k) => {
+        const puntos = periodos.map((p, i) => [x(i), y(valor[`${plataforma}|${p}`] || 0)])
+        return <g key={plataforma}>
+          <polyline fill="none" stroke={USO_COLORES[k % USO_COLORES.length]} strokeWidth="2.5" points={puntos.map((pt) => pt.join(',')).join(' ')} />
+          {puntos.map(([px, py], i) => <circle key={i} cx={px} cy={py} r="3" fill={USO_COLORES[k % USO_COLORES.length]}><title>{`${plataforma} · ${periodos[i]}: ${formatoNumero(valor[`${plataforma}|${periodos[i]}`] || 0)}`}</title></circle>)}
+        </g>
+      })}
+    </svg>
+    <figcaption className="chart-legend">{plataformas.map((plataforma, k) => <span key={plataforma}><i style={{ background: USO_COLORES[k % USO_COLORES.length] }} />{plataforma}</span>)}</figcaption>
+  </figure>
+}
+
+function UsagePanel({ onGo }) {
+  const { request } = useAuth()
+  const [options, setOptions] = useState(null)
+  const [filtros, setFiltros] = useState({ metrica: 'Total_Item_Requests', plataformas: [], desde: '', hasta: '' })
+  const [serie, setSerie] = useState(null)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    request('/api/coordinator/usage/options').then((data) => {
+      setOptions(data)
+      setFiltros((actual) => ({ ...actual, desde: data.desde ? data.desde.slice(0, 7) : '', hasta: data.hasta ? data.hasta.slice(0, 7) : '' }))
+    }).catch((problem) => setError(problem.message))
+  }, [request])
+  const query = useMemo(() => {
+    const params = new URLSearchParams({ metrica: filtros.metrica })
+    filtros.plataformas.forEach((p) => params.append('plataforma', p))
+    if (filtros.desde) params.set('desde', filtros.desde)
+    if (filtros.hasta) params.set('hasta', filtros.hasta)
+    return params
+  }, [filtros])
+  useEffect(() => {
+    if (!options) return
+    request(`/api/coordinator/usage?${query}`).then((data) => { setSerie(data); setError('') }).catch((problem) => setError(problem.message))
+  }, [request, options, query])
+  if (error && !options) return <Alert kind="error">{error}</Alert>
+  if (!options) return <div className="loading">Cargando uso de suscripciones…</div>
+  if (!options.plataformas.length) return <section className="panel empty-state">Aún no hay datos de uso. <button type="button" className="text-link" onClick={() => onGo('importar')}>Importe un reporte COUNTER</button> para empezar.</section>
+  const exportar = new URLSearchParams(query); exportar.delete('metrica')
+  const tabla = serie ? serie.periodos.map((periodo) => ({ periodo, valores: Object.fromEntries(serie.filas.filter((f) => f.periodo === periodo).map((f) => [f.plataforma, f.valor])) })) : []
+  const plataformas = serie ? serie.totales.map((t) => t.plataforma) : []
+  return <div className="page-stack">
+    {error && <Alert kind="error">{error}</Alert>}
+    <section className="panel">
+      <h2>Uso de las suscripciones de biblioteca</h2>
+      <p className="muted">Uso mensual de las bases de datos suscritas por la universidad, según los reportes COUNTER de cada editor.</p>
+      <div className="usage-filters">
+        <label className="field"><span>Indicador</span><select value={filtros.metrica} onChange={(event) => setFiltros({ ...filtros, metrica: event.target.value })}>{USO_METRICAS.filter(([key]) => options.metricas.includes(key)).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
+        <label className="field"><span>Desde</span><input type="month" value={filtros.desde} onChange={(event) => setFiltros({ ...filtros, desde: event.target.value })} /></label>
+        <label className="field"><span>Hasta</span><input type="month" value={filtros.hasta} onChange={(event) => setFiltros({ ...filtros, hasta: event.target.value })} /></label>
+        <a className="button button-outline" href={`/api/coordinator/usage/export.csv?${exportar}`}>Exportar CSV</a>
+      </div>
+      <div className="platform-filter">{options.plataformas.map((p) => <label key={p} className="check-option"><input type="checkbox" checked={!filtros.plataformas.length || filtros.plataformas.includes(p)} onChange={(event) => {
+        const actuales = filtros.plataformas.length ? filtros.plataformas : options.plataformas
+        const siguiente = event.target.checked ? [...actuales, p] : actuales.filter((x) => x !== p)
+        setFiltros({ ...filtros, plataformas: siguiente.length === options.plataformas.length ? [] : siguiente })
+      }} />{p}</label>)}</div>
+      {serie && <UsageChart serie={serie} />}
+    </section>
+    {serie && serie.periodos.length > 0 && <section className="panel">
+      <h2>Detalle por mes</h2>
+      <div className="table-scroll"><table>
+        <thead><tr><th>Mes</th>{plataformas.map((p) => <th key={p}>{p}</th>)}</tr></thead>
+        <tbody>{tabla.map((fila) => <tr key={fila.periodo}><td>{fila.periodo}</td>{plataformas.map((p) => <td key={p}>{formatoNumero(fila.valores[p])}</td>)}</tr>)}</tbody>
+        <tfoot><tr><th>Total</th>{serie.totales.map((t) => <th key={t.plataforma}>{formatoNumero(t.total)}</th>)}</tr></tfoot>
+      </table></div>
+    </section>}
+  </div>
+}
+
+function UsageImport({ onImported }) {
+  const { request } = useAuth()
+  const [file, setFile] = useState(null)
+  const [preview, setPreview] = useState(null)
+  const [imports, setImports] = useState([])
+  const [sushiActivo, setSushiActivo] = useState(false)
+  const [rango, setRango] = useState({ desde: '', hasta: '' })
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
+  const loadImports = useCallback(() => request('/api/coordinator/usage/imports').then(setImports).catch(() => {}), [request])
+  useEffect(() => {
+    loadImports()
+    request('/api/coordinator/usage/options').then((data) => setSushiActivo(data.sushi_activo)).catch(() => {})
+  }, [request, loadImports])
+  async function send(path) {
+    const body = new FormData(); body.append('file', file)
+    return request(path, { method: 'POST', body })
+  }
+  async function previsualizar() {
+    setBusy(true); setError(''); setMessage(''); setPreview(null)
+    try { setPreview(await send('/api/coordinator/usage/import/preview')) } catch (problem) { setError(problem.message) } finally { setBusy(false) }
+  }
+  async function importar() {
+    setBusy(true); setError('')
+    try {
+      const result = await send('/api/coordinator/usage/import')
+      setMessage(`Reporte importado: ${result.creados} registros nuevos y ${result.actualizados} actualizados.`)
+      setPreview(null); setFile(null); await loadImports(); onImported?.()
+    } catch (problem) { setError(problem.message) } finally { setBusy(false) }
+  }
+  async function sincronizar() {
+    setBusy(true); setError(''); setMessage('')
+    try {
+      const result = await request('/api/coordinator/usage/sushi-sync', { method: 'POST', body: rango })
+      setMessage(`Descarga SUSHI completada: ${result.creados} nuevos y ${result.actualizados} actualizados.`)
+      await loadImports(); onImported?.()
+    } catch (problem) { setError(problem.message) } finally { setBusy(false) }
+  }
+  return <section className="panel">
+    <h2>Reporte de uso de suscripciones (COUNTER 5)</h2>
+    <p className="muted">Descargue el reporte de plataforma (PR) del portal de administración del editor (por ejemplo, Elsevier) y súbalo aquí en formato JSON o CSV. Primero se muestra una vista previa; nada se guarda hasta confirmar. Volver a subir un mes ya cargado actualiza sus valores.</p>
+    {error && <Alert kind="error">{error}</Alert>}
+    {message && <Alert kind="success">{message}</Alert>}
+    <div className="usage-filters">
+      <label className="field"><span>Archivo COUNTER</span><input type="file" accept=".json,.csv,.tsv,.txt" onChange={(event) => { setFile(event.target.files?.[0] || null); setPreview(null) }} /></label>
+      <button type="button" className="button button-outline" disabled={!file || busy} onClick={previsualizar}>{busy && !preview ? 'Leyendo…' : 'Vista previa'}</button>
+    </div>
+    {preview && <div className="import-preview">
+      <dl className="details-grid">
+        <dt>Plataformas</dt><dd>{preview.plataformas.join(', ')}</dd>
+        <dt>Periodo</dt><dd>{preview.desde.slice(0, 7)} a {preview.hasta.slice(0, 7)}</dd>
+        <dt>Indicadores</dt><dd>{preview.metricas.join(', ')}</dd>
+        <dt>Registros</dt><dd>{preview.filas}</dd>
+        {preview.metricas_ignoradas.length > 0 && <><dt>Ignorados</dt><dd>{preview.metricas_ignoradas.join(', ')}</dd></>}
+      </dl>
+      <div className="form-actions"><button type="button" className="button button-primary" disabled={busy} onClick={importar}>{busy ? 'Importando…' : 'Confirmar importación'}</button><button type="button" className="button button-quiet" onClick={() => setPreview(null)}>Cancelar</button></div>
+    </div>}
+    <h3>Descarga automática (SUSHI)</h3>
+    {sushiActivo ? <div className="usage-filters">
+      <label className="field"><span>Desde</span><input type="month" value={rango.desde} onChange={(event) => setRango({ ...rango, desde: event.target.value })} /></label>
+      <label className="field"><span>Hasta</span><input type="month" value={rango.hasta} onChange={(event) => setRango({ ...rango, hasta: event.target.value })} /></label>
+      <button type="button" className="button button-outline" disabled={busy || !rango.desde || !rango.hasta} onClick={sincronizar}>Descargar del editor</button>
+    </div> : <p className="notice">No está activada: requiere las credenciales COUNTER de la biblioteca (sección [sushi] de config.ini). Mientras tanto, importe los reportes como archivo.</p>}
+    <h3>Últimas importaciones</h3>
+    {imports.length ? <div className="table-scroll"><table><thead><tr><th>Fecha</th><th>Origen</th><th>Archivo</th><th>Nuevos</th><th>Actualizados</th></tr></thead>
+      <tbody>{imports.map((item) => <tr key={item.id}><td>{new Date(item.iniciada_en).toLocaleString('es-PE')}</td><td>{item.sistema === 'sushi' ? 'SUSHI' : 'Archivo'}</td><td>{item.archivo || '—'}</td><td>{item.registros_creados}</td><td>{item.registros_actualizados}</td></tr>)}</tbody></table></div>
+      : <p className="muted">Todavía no se importaron reportes.</p>}
+  </section>
+}
+
 function CoordinatorPublications() {
   const { request } = useAuth()
   const [term, setTerm] = useState('')
@@ -758,7 +963,9 @@ function CoordinatorPublications() {
   const [estado, setEstado] = useState('activos')
   const [items, setItems] = useState([])
   const [selected, setSelected] = useState(null)
-  const [tab, setTab] = useState('catalog')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tab = ['resumen', 'catalog', 'uso', 'importar'].includes(searchParams.get('pestana')) ? searchParams.get('pestana') : 'resumen'
+  const setTab = useCallback((value) => setSearchParams({ pestana: value }), [setSearchParams])
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(true)
@@ -780,14 +987,16 @@ function CoordinatorPublications() {
     setSelected(await request(`/api/coordinator/publications/${selected.uuid}`))
   }
   return <div className="page-stack">
-    <div className="page-heading"><p className="eyebrow">Producción científica</p><h1>Histórico de publicaciones</h1><p>El catálogo muestra publicaciones consolidadas; la importación y depuración de Pure se revisa aparte. No es el historial de accesos de Biblioteca.</p></div>
+    <div className="page-heading"><p className="eyebrow">Seguimiento del uso de repositorios</p><h1>Histórico</h1><p>Lo que contiene el repositorio institucional, cuánto se usan las suscripciones de biblioteca y la fuente de los reportes del coordinador.</p></div>
     {error && <Alert kind="error">{error}</Alert>}
     {message && <Alert kind="success">{message}</Alert>}
     <div className="tab-row" role="tablist">
-      <button className={`tab-button${tab === 'catalog' ? ' selected' : ''}`} role="tab" aria-selected={tab === 'catalog'} onClick={() => setTab('catalog')}>Publicaciones</button>
-      <button className={`tab-button${tab === 'pure' ? ' selected' : ''}`} role="tab" aria-selected={tab === 'pure'} onClick={() => setTab('pure')}>Importar y depurar Pure</button>
+      {[['resumen', 'Resumen'], ['catalog', 'Publicaciones'], ['uso', 'Uso de suscripciones'], ['importar', 'Importar datos']].map(([key, label]) => <button key={key} className={`tab-button${tab === key ? ' selected' : ''}`} role="tab" aria-selected={tab === key} onClick={() => setTab(key)}>{label}</button>)}
     </div>
-    {tab === 'catalog' ? <div className="publication-layout">
+    {tab === 'resumen' && <RepositorySummary onGo={setTab} />}
+    {tab === 'uso' && <UsagePanel onGo={setTab} />}
+    {tab === 'importar' && <div className="page-stack"><UsageImport /><section className="panel"><h2>Publicaciones desde Pure</h2><PureImportReview /></section></div>}
+    {tab === 'catalog' && <div className="publication-layout">
       <section className="panel publication-list">
         <h2>Catálogo oficial</h2>
         <form className="search-bar" onSubmit={(event) => { event.preventDefault(); setSearch(term) }}>
@@ -808,9 +1017,8 @@ function CoordinatorPublications() {
           <div className="detail-pair"><dt>UUID</dt><dd>{selected.uuid}</dd></div>
         </dl>}
         <BajaPanel entidad="la publicación" registro={selected} basePath={selected ? `/api/coordinator/publications/${selected.uuid}` : ''} onChanged={changed} />
-        <p className="notice">La edición directa está pausada. Los cambios de Pure se harán sobre candidaturas y solo pasarán al catálogo después de la aprobación.</p>
       </section>
-    </div> : <PureImportReview />}
+    </div>}
   </div>
 }
 
