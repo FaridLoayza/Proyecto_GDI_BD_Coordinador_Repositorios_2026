@@ -170,7 +170,7 @@ def flujo_postulacion_cris():
 
     solicitud_id = escalar(
         "SELECT s.id FROM solicitud_investigador s "
-        "JOIN cuenta_investigador c ON c.id = s.cuenta_investigador_id "
+        "JOIN cuenta_usuario c ON c.id = s.cuenta_investigador_id "
         "WHERE c.codigo_ucsm = %s",
         (CRIS_COD,))
     paso(
@@ -286,7 +286,7 @@ def flujo_postulacion_cris():
     )
     paso(
         escalar("SELECT COUNT(*) FROM investigador i "
-                "JOIN cuenta_investigador c ON c.id = i.cuenta_investigador_id "
+                "JOIN cuenta_usuario c ON c.id = i.cuenta_investigador_id "
                 "WHERE c.codigo_ucsm = %s", (CRIS_COD,)) == 1
         and escalar("SELECT estado FROM solicitud_investigador WHERE id = %s",
                     (solicitud_id,)) == "aprobada"
@@ -465,10 +465,10 @@ def flujo_solicitud_patente_cris():
         escalar("SELECT COUNT(*) FROM formato_patente "
                 "WHERE n_patente = %s AND solicitud_patente_id = %s",
                 (CRIS_PAT, solicitud_id)) == 1
-        and escalar("SELECT COUNT(*) FROM revision_solicitud_patente "
+        and escalar("SELECT COUNT(*) FROM revision_solicitud "
                     "WHERE solicitud_patente_id = %s AND version_evaluada = 1 "
                     "AND resultado = 'observada'", (solicitud_id,)) == 1
-        and escalar("SELECT COUNT(*) FROM revision_solicitud_patente "
+        and escalar("SELECT COUNT(*) FROM revision_solicitud "
                     "WHERE solicitud_patente_id = %s AND version_evaluada = 2 "
                     "AND resultado = 'aprobada'", (solicitud_id,)) == 1
         and escalar("SELECT estado FROM solicitud_patente WHERE id = %s",

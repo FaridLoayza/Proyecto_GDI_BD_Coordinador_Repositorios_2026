@@ -10,6 +10,16 @@ solicitudes de patentes e importar publicaciones de investigación. Utiliza Post
 - Registro de investigadores y revisión de postulaciones por coordinación.
 - Registro y seguimiento de solicitudes de patentes.
 - Importación de publicaciones desde CSV de Pure y revisión de registros pendientes.
+- **Histórico (seguimiento del uso de repositorios):** resumen del repositorio
+  (publicaciones por año, tipo, escuela y ODS), catálogo de publicaciones, **uso de
+  las suscripciones de biblioteca** (ScienceDirect, Scopus, ClinicalKey, Engineering
+  Village…) por plataforma y mes, con gráfico y exportación CSV, e importación de
+  reportes **COUNTER 5** (JSON o CSV). Los datos de uso son agregados: no hay datos
+  por estudiante. Ejemplo para importar:
+  `backend/database/ejemplos/reporte_counter5_PR_2026_ejemplo.json`.
+- Descarga automática del uso por **SUSHI** (Elsevier) preparada y apagada: se activa
+  con la sección `[sushi]` de `config.ini` cuando la biblioteca entregue sus
+  credenciales COUNTER.
 - Directorio de investigadores y reportes del repositorio.
 - 15 reportes (consultas) implementados como procedimientos almacenados
   `sp_reporte_01` ... `sp_reporte_15`; 8 de ellos usan JOIN.
@@ -38,7 +48,7 @@ gestor-investigacion/
     src/db/conexion.py            Conexión y consultas PostgreSQL
   frontend/
     portal/                       Aplicación web en React y Vite
-  entrega/ejecutable/             Archivos de la carpeta EJECUTABLE del release
+  empaquetado/                    Archivos que acompañan al .exe en el release
   .github/workflows/              Generación automática del release para Windows
 ```
 
@@ -183,6 +193,7 @@ Las pruebas del portal y del instalador pueden ejecutarse así:
 
 ```cmd
 python -m unittest backend.pruebas.prueba_portal_web
+python -m unittest backend.pruebas.prueba_uso_suscripciones
 python backend\pruebas\prueba_instalador_bd.py
 ```
 

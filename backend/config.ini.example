@@ -24,8 +24,18 @@ redirect_uri = http://127.0.0.1:8000/api/auth/orcid/callback
 frontend_origin =
 
 ; Opcional: el panel de administrador (/admin) se conecta con este usuario de
-; PostgreSQL. Creelo con backend/database/rol_admin_cris.sql. Si se omite esta
+; PostgreSQL (por ejemplo, un rol con permisos CRUD). Si se omite esta
 ; seccion, el panel usa la conexion de [postgresql].
 ; [postgresql_admin]
 ; user = admin_cris
 ; password = CAMBIAR_CLAVE_ADMIN
+
+; Descarga automatica del uso de suscripciones (COUNTER 5 / SUSHI de Elsevier).
+; APAGADA por defecto: mientras la biblioteca no entregue sus credenciales
+; COUNTER, los reportes se importan como archivo en Historico > Importar datos.
+[sushi]
+habilitado = false
+url_base = https://api.elsevier.com/sushi
+customer_id =
+requestor_id =
+api_key =

@@ -47,9 +47,9 @@ class NoEncontrado(ErrorOperacion):
 # --- Cuenta de administrador -------------------------------------------------
 
 _SQL_LOGIN = """
-SELECT id, correo_elec, nombre, password_hash, activo
-  FROM cuenta_administrador
- WHERE lower(correo_elec) = lower(btrim(%s))
+SELECT id, correo_elec, nombre, password_hash, estado_cuenta
+  FROM cuenta_usuario
+ WHERE rol = 'administrador' AND lower(btrim(correo_elec)) = lower(btrim(%s))
 """
 
 
@@ -60,7 +60,7 @@ def autenticar(correo, clave, cfg=None):
     try:
         filas = consultar_dicts(_SQL_LOGIN, (correo,), cfg)
     except ErrorOperacion as exc:
-        if "cuenta_administrador" in str(exc):
+        if "cuenta_usuario" in str(exc):
             raise ErrorOperacion(
                 "La cuenta de administrador no está instalada. Reinstale el esquema "
                 "desde cero y luego ejecute crear_admin.py.") from exc
@@ -68,18 +68,19 @@ def autenticar(correo, clave, cfg=None):
     if not filas or not verificar(clave, filas[0]["password_hash"]):
         raise ErrorOperacion("Correo o contraseña incorrectos.")
     admin = filas[0]
-    if not admin["activo"]:
+    if admin["estado_cuenta"] != "activa":
         raise ErrorOperacion("Esta cuenta de administrador está desactivada.")
     return {"id": admin["id"], "correo": admin["correo_elec"], "nombre": admin["nombre"]}
 
 
 _SQL_GUARDAR_ADMIN = """
-INSERT INTO cuenta_administrador (correo_elec, nombre, password_hash)
-VALUES (lower(btrim(%s)), btrim(%s), %s)
-ON CONFLICT (lower(correo_elec)) DO UPDATE
+INSERT INTO cuenta_usuario (rol, correo_elec, nombre, password_hash)
+VALUES ('administrador', lower(btrim(%s)), btrim(%s), %s)
+ON CONFLICT (rol, lower(btrim(correo_elec))) DO UPDATE
    SET nombre = EXCLUDED.nombre,
        password_hash = EXCLUDED.password_hash,
-       activo = TRUE
+       estado_cuenta = 'activa',
+       actualizado_en = CURRENT_TIMESTAMP
 """
 
 
