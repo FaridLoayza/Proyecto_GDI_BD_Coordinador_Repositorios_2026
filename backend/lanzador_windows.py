@@ -2,14 +2,11 @@
 
 Inicia el portal (FastAPI + frontend React ya compilado) y abre el navegador.
 config.ini se lee de la misma carpeta donde está el .exe.
-Opciones:
-    --instalar-bd    crea la base bd_coordinador_repositorios con el esquema y datos de prueba.
-    --crear-admin    crea o actualiza la cuenta de administrador del portal.
+Con --crear-admin crea o actualiza la cuenta de administrador del portal.
 
 Generar el ejecutable (lo hace el workflow .github/workflows/release-windows.yml):
     pyinstaller --onefile --name PortalCRIS --paths . --collect-submodules uvicorn
                 --add-data "frontend/portal/dist;frontend/portal/dist"
-                --add-data "backend/database/base_datos_repositorio.sql;backend/database"
                 backend/lanzador_windows.py
 """
 import os
@@ -20,23 +17,12 @@ import webbrowser
 import uvicorn
 
 
-def _pausar():
-    if getattr(sys, "frozen", False):
-        input("Presione Enter para cerrar...")
-
-
 def main():
-    if "--instalar-bd" in sys.argv[1:]:
-        from backend.database import instalar_bd
-        print("Instalación de la base de datos de Portal CRIS (esquema + datos de prueba)")
-        codigo = instalar_bd.main()
-        _pausar()
-        sys.exit(codigo)
-
     if "--crear-admin" in sys.argv[1:]:
         from backend.src.repositorios.administracion import crear_admin_interactivo
         codigo = crear_admin_interactivo()
-        _pausar()
+        if getattr(sys, "frozen", False):
+            input("Presione Enter para cerrar...")
         sys.exit(codigo)
 
     host = os.getenv("PORTAL_HOST", "127.0.0.1")

@@ -52,32 +52,32 @@ jobs:
           pyinstaller --noconfirm --onefile --name PortalCRIS --paths .
           --collect-submodules uvicorn
           --add-data "frontend/portal/dist;frontend/portal/dist"
-          --add-data "backend/database/base_datos_repositorio.sql;backend/database"
           backend/lanzador_windows.py
 
-      - name: Probar el ejecutable
-        shell: pwsh
-        run: |
-          $p = Start-Process dist/PortalCRIS.exe -PassThru -Environment @{ BROWSER = 'none'; PORTAL_PORT = '8765' }
-          $ok = $false
-          foreach ($i in 1..30) {
-            try { if ((Invoke-RestMethod http://127.0.0.1:8765/api/health).status -eq 'ok') { $ok = $true; break } } catch {}
-            Start-Sleep -Seconds 1
-          }
-          Stop-Process -Id $p.Id -Force
-          if (-not $ok) { throw 'PortalCRIS.exe no respondió en /api/health' }
-
-      - name: Empaquetar (carpeta EJECUTABLE)
+      - name: Empaquetar
         shell: pwsh
         run: |
           $nombre = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { "dev-$($env:GITHUB_SHA.Substring(0,7))" }
           $carpeta = "PortalCRIS-$nombre-windows"
-          New-Item -ItemType Directory "$carpeta/sql" -Force | Out-Null
+          New-Item -ItemType Directory $carpeta | Out-Null
           Copy-Item dist/PortalCRIS.exe $carpeta/
           Copy-Item backend/config.ini.example $carpeta/
-          Copy-Item "entrega/ejecutable/*" $carpeta/
-          Copy-Item CREDENCIALES_PRUEBA.md "$carpeta/CREDENCIALES_PRUEBA.txt"
-          Copy-Item backend/database/base_datos_repositorio.sql, backend/database/migracion_scopus_opcional.sql, backend/database/migracion_cuenta_administrador.sql, backend/database/migracion_entrega5.sql, backend/database/rol_admin_cris.sql "$carpeta/sql/"
+          Copy-Item backend/database/base_datos_repositorio.sql, backend/database/migracion_scopus_opcional.sql, backend/database/migracion_cuenta_administrador.sql, backend/database/rol_admin_cris.sql $carpeta/
+          @"
+          Portal CRIS UCSM - $nombre
+
+          1. Copie config.ini.example como config.ini (en esta misma carpeta) y complete
+             los datos de PostgreSQL y la seccion [orcid]. Use
+             redirect_uri = http://127.0.0.1:8000/api/auth/orcid/callback
+          2. Base nueva: ejecute base_datos_repositorio.sql en PostgreSQL 16.
+             Base ya instalada: ejecute una vez migracion_scopus_opcional.sql y
+             migracion_cuenta_administrador.sql.
+          3. Cuenta admin del portal: ejecute  PortalCRIS.exe --crear-admin
+             y luego ingrese en http://127.0.0.1:8000/login/admin
+          4. Rol admin_cris de PostgreSQL (opcional): vea rol_admin_cris.sql.
+          5. Abra PortalCRIS.exe. El navegador se abre en http://127.0.0.1:8000.
+             Cierre la ventana negra para detener el portal.
+          "@ | Set-Content -Encoding utf8 "$carpeta/LEEME.txt"
           Compress-Archive -Path $carpeta -DestinationPath "$carpeta.zip"
           "ZIP=$carpeta.zip" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
 
