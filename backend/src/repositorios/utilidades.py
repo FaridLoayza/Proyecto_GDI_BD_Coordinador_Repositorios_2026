@@ -57,13 +57,9 @@ def partir(texto, con_comas=False):
 ESTADOS = ("activos", "bajas", "todos")
 
 
-def condicion_estado(estado, alias):
-    """Condicion SQL del borrado logico: activos (por defecto), bajas o todos."""
+def estado_valido(estado):
+    """Estado del borrado logico para los procedimientos: activos (por defecto), bajas o todos."""
     estado = (estado or "activos").strip().lower()
     if estado not in ESTADOS:
         raise ErrorOperacion("El estado debe ser activos, bajas o todos.")
-    if estado == "activos":
-        return f"{alias}.activo"
-    if estado == "bajas":
-        return f"NOT {alias}.activo"
-    return ""
+    return estado

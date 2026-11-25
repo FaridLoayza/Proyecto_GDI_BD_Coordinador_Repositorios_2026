@@ -7,7 +7,7 @@ from datetime import date
 
 from psycopg2.extras import Json
 
-from ..db.conexion import consultar_dicts, ejecutar_procedimiento
+from ..db.conexion import consultar_procedimiento, ejecutar_procedimiento
 from . import utilidades as u
 from .catalogos import TIPOS_PUBLICACION
 
@@ -23,46 +23,10 @@ ORDEN = [
 ARRAYS = ("contributors", "identifiers", "electronic_versions", "keywords_groups",
           "publication_status")
 
-_SQL_LISTAR = """
-SELECT h.uuid::text AS uuid, h.title, h.publication_year, h.type, h.language, h.category,
-       h.activo, h.fecha_baja, h.motivo_baja
-FROM historico h
-{filtro}
-ORDER BY h.publication_year DESC, h.title
-"""
-
-_SQL_OBTENER = """
-SELECT h.*, h.uuid::text AS uuid_texto,
-  COALESCE((SELECT array_agg(c.contributors ORDER BY c.contributors)
-              FROM historico_contributors c WHERE c.uuid = h.uuid), '{}') AS contributors,
-  COALESCE((SELECT array_agg(i.identifiers ORDER BY i.identifiers)
-              FROM historico_identifiers i WHERE i.uuid = h.uuid), '{}') AS identifiers,
-  COALESCE((SELECT array_agg(e.electronic_versions ORDER BY e.electronic_versions)
-              FROM historico_electronic_versions e WHERE e.uuid = h.uuid), '{}') AS electronic_versions,
-  COALESCE((SELECT array_agg(k.keywords_groups ORDER BY k.keywords_groups)
-              FROM historico_keywords_groups k WHERE k.uuid = h.uuid), '{}') AS keywords_groups,
-  COALESCE((SELECT array_agg(s.publication_status ORDER BY s.publication_status)
-              FROM historico_publication_status s WHERE s.uuid = h.uuid), '{}') AS publication_status,
-  COALESCE((SELECT jsonb_agg(jsonb_build_object('pure_id', l.pure_id, 'link_type', l.link_type,
-                                               'url', l.url, 'description', l.description))
-              FROM historico_links l WHERE l.uuid = h.uuid), '[]'::jsonb) AS links
-FROM historico h
-WHERE h.uuid = %s::uuid
-"""
-
-
 def listar_detalle(filtro="", estado="activos"):
     """Diccionarios del catalogo de publicaciones. estado: activos | bajas | todos."""
-    condiciones, parametros = [], []
-    filtro = (filtro or "").strip()
-    if filtro:
-        condiciones.append("h.title ILIKE %s")
-        parametros.append(f"%{filtro}%")
-    condicion_estado = u.condicion_estado(estado, "h")
-    if condicion_estado:
-        condiciones.append(condicion_estado)
-    where = ("WHERE " + " AND ".join(condiciones)) if condiciones else ""
-    return consultar_dicts(_SQL_LISTAR.format(filtro=where), tuple(parametros) or None)
+    return consultar_procedimiento("sp_listar_historico",
+                                   [(filtro or "").strip(), u.estado_valido(estado)])
 
 
 def listar(filtro="", estado="activos"):
@@ -72,7 +36,7 @@ def listar(filtro="", estado="activos"):
 
 def obtener(uuid_texto):
     """Fila completa (claves = columnas de historico) + listas hijas, o None."""
-    filas = consultar_dicts(_SQL_OBTENER, (u.obligatorio(uuid_texto, "El UUID"),))
+    filas = consultar_procedimiento("sp_obtener_historico", [u.obligatorio(uuid_texto, "El UUID")], ["uuid"])
     if not filas:
         return None
     d = filas[0]

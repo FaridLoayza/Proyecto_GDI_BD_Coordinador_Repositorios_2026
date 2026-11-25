@@ -1,11 +1,14 @@
 """
 Acceso nativo a PostgreSQL con psycopg2 (sin frameworks ni ORM).
 
-Todo el aplicativo (ventana, pruebas e instalador) usa este modulo:
-  - conectar / probar_conexion        -> avance anterior (conexion)
-  - ejecutar_consulta / consultar_dicts -> SELECT (reportes y listados)
-  - ejecutar_procedimiento            -> CALL sp_...  (insertar, modificar, borrar)
-  - ejecutar_sentencia                -> DML suelto (solo para pruebas)
+El aplicativo no contiene instrucciones SQL: toda operacion es un CALL a un
+procedimiento almacenado de base_datos_repositorio.sql.
+  - conectar / probar_conexion   -> conexion y estado de la base (sp_estado_base)
+  - consultar_procedimiento      -> CALL sp_...(..., 'resultado') + FETCH (lecturas)
+  - ejecutar_procedimiento       -> CALL sp_...  (insertar, modificar, borrar)
+  - ejecutar_reporte             -> CALL sp_reporte_NN (las 15 consultas)
+  - Transaccion                  -> varios CALL dentro de una sola transaccion
+  - ejecutar_consulta / consultar_dicts / ejecutar_sentencia -> solo para las pruebas
 """
 import configparser
 import os
@@ -154,6 +157,109 @@ def consultar_dicts(sql, parametros=None, cfg=None):
     return [dict(zip(columnas, fila)) for fila in filas]
 
 
+_CURSOR = "resultado"
+
+
+def _marcas(nombre, parametros, tipos):
+    """Valida el nombre y arma los marcadores %s (con cast opcional) del CALL."""
+    if not _NOMBRE_SQL.match(nombre):
+        raise ValueError("Nombre de procedimiento invalido: " + nombre)
+    parametros = tuple(parametros)
+    tipos = list(tipos) if tipos else [None] * len(parametros)
+    if len(tipos) != len(parametros):
+        raise ValueError("tipos y parametros deben tener la misma longitud")
+    return parametros, ", ".join("%s" + ("::" + t if t else "") for t in tipos)
+
+
+def _llamar(cur, nombre, parametros=(), tipos=None):
+    parametros, marcas = _marcas(nombre, parametros, tipos)
+    cur.execute(f"CALL {nombre}({marcas})", parametros)
+
+
+def _leer_cursor(cur, nombre, parametros=(), tipos=None):
+    """CALL a un procedimiento de consulta (ultimo parametro INOUT refcursor) y
+    lectura de su resultado como lista de diccionarios."""
+    parametros, marcas = _marcas(nombre, parametros, tipos)
+    marcas = f"{marcas}, %s" if marcas else "%s"
+    cur.execute(f"CALL {nombre}({marcas})", parametros + (_CURSOR,))
+    cur.execute(f'FETCH ALL FROM "{_CURSOR}"')
+    columnas = [d[0] for d in cur.description]
+    filas = [dict(zip(columnas, fila)) for fila in cur.fetchall()]
+    cur.execute(f'CLOSE "{_CURSOR}"')
+    return filas
+
+
+def consultar_procedimiento(nombre, parametros=(), tipos=None, cfg=None):
+    """
+    Ejecuta un procedimiento de consulta y devuelve una lista de diccionarios.
+    El procedimiento abre un cursor con el resultado en su ultimo parametro:
+      CALL nombre(%s, ..., 'resultado');  FETCH ALL FROM resultado;
+    """
+    conn = conectar(cfg)
+    try:
+        with conn.cursor() as cur:
+            filas = _leer_cursor(cur, nombre, parametros, tipos)
+        conn.commit()
+        return filas
+    except psycopg2.Error as e:
+        conn.rollback()
+        raise ErrorOperacion(_mensaje_operacion(e)) from e
+    finally:
+        conn.close()
+
+
+class Transaccion:
+    """
+    Varios CALL en una sola transaccion (todo o nada):
+        with Transaccion() as t:
+            t.llamar("sp_x", [...])
+            filas = t.consultar("sp_y", [...])
+    Hace commit al salir sin errores y rollback si algo falla.
+    serializable=True usa el nivel de aislamiento SERIALIZABLE.
+    """
+
+    def __init__(self, cfg=None, serializable=False):
+        self._cfg = cfg
+        self._serializable = serializable
+        self._conn = None
+        self._cur = None
+
+    def __enter__(self):
+        self._conn = conectar(self._cfg)
+        if self._serializable:
+            self._conn.set_session(
+                isolation_level=psycopg2.extensions.ISOLATION_LEVEL_SERIALIZABLE)
+        self._cur = self._conn.cursor()
+        return self
+
+    def llamar(self, nombre, parametros=(), tipos=None):
+        try:
+            _llamar(self._cur, nombre, parametros, tipos)
+        except psycopg2.Error as e:
+            raise ErrorOperacion(_mensaje_operacion(e)) from e
+
+    def consultar(self, nombre, parametros=(), tipos=None):
+        try:
+            return _leer_cursor(self._cur, nombre, parametros, tipos)
+        except psycopg2.Error as e:
+            raise ErrorOperacion(_mensaje_operacion(e)) from e
+
+    def __exit__(self, tipo, valor, traza):
+        try:
+            if tipo is None:
+                try:
+                    self._conn.commit()
+                except psycopg2.Error as e:
+                    self._conn.rollback()
+                    raise ErrorOperacion(_mensaje_operacion(e)) from e
+            else:
+                self._conn.rollback()
+        finally:
+            self._cur.close()
+            self._conn.close()
+        return False
+
+
 def ejecutar_procedimiento(nombre, parametros=(), tipos=None, cfg=None):
     """
     Ejecuta CALL nombre(%s, %s, ...) en una transaccion propia.
@@ -163,17 +269,10 @@ def ejecutar_procedimiento(nombre, parametros=(), tipos=None, cfg=None):
              parametro, p. ej. "varchar[]", "uuid", "jsonb"; None = sin cast.
     Lanza ErrorOperacion con un mensaje listo para mostrar.
     """
-    if not _NOMBRE_SQL.match(nombre):
-        raise ValueError("Nombre de procedimiento invalido: " + nombre)
-    parametros = tuple(parametros)
-    tipos = list(tipos) if tipos else [None] * len(parametros)
-    if len(tipos) != len(parametros):
-        raise ValueError("tipos y parametros deben tener la misma longitud")
-    marcas = ", ".join("%s" + ("::" + t if t else "") for t in tipos)
     conn = conectar(cfg)
     try:
         with conn.cursor() as cur:
-            cur.execute(f"CALL {nombre}({marcas})", parametros)
+            _llamar(cur, nombre, parametros, tipos)
         conn.commit()
     except psycopg2.Error as e:
         conn.rollback()
@@ -233,24 +332,9 @@ def probar_conexion(cfg=None):
     conn = conectar(cfg)
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT version(), current_database(), current_user")
-            version, base, usuario = cur.fetchone()
-            cur.execute(
-                "SELECT count(*) FROM information_schema.tables "
-                "WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"
-            )
-            tablas = cur.fetchone()[0]
-            cur.execute(
-                "SELECT count(*) FROM pg_indexes "
-                "WHERE schemaname = 'public' AND indexname LIKE 'idx\\_%'"
-            )
-            indices = cur.fetchone()[0]
-            filas_persona = None
-            if tablas:
-                cur.execute("SELECT count(*) FROM persona")
-                filas_persona = cur.fetchone()[0]
-        return {"version": version.split(",")[0], "base": base, "usuario": usuario,
-                "tablas": tablas, "indices": indices, "filas_persona": filas_persona}
+            estado = _leer_cursor(cur, "sp_estado_base")[0]
+        conn.commit()
+        return estado
     except psycopg2.Error as e:
         raise ErrorConexion("La conexion abrio, pero fallo la verificacion: "
                             + str(e).strip()) from e

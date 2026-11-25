@@ -1,5 +1,5 @@
 """Reportes: las 15 consultas (procedimientos sp_reporte_NN) y sp_generar_reporte."""
-from ..db.conexion import consultar_dicts, ejecutar_procedimiento, ejecutar_reporte
+from ..db.conexion import consultar_procedimiento, ejecutar_procedimiento, ejecutar_reporte
 from . import utilidades as u
 from .catalogo_reportes import CONSULTAS
 
@@ -16,45 +16,14 @@ SECCIONES = [
 ]
 
 
-_SQL_INDICADORES = """
-SELECT (SELECT COUNT(*) FROM investigador WHERE activo)                         AS investigadores,
-       (SELECT COUNT(DISTINCT escuela_profesional) FROM investigador WHERE activo) AS escuelas,
-       (SELECT COUNT(*) FROM historico WHERE activo)                            AS publicaciones,
-       (SELECT COUNT(*) FROM patente WHERE activo)                              AS patentes,
-       (SELECT COUNT(DISTINCT substring(o.ods FROM '^ODS ([0-9]+):'))
-          FROM formato_inv_ods o
-          JOIN formato_investigador fi ON fi.n_formato_inv = o.n_formato_inv
-          JOIN investigador i ON i.codigo_ucsm = fi.codigo_ucsm
-         WHERE i.activo)                                                         AS ods_vinculados
-"""
-
-_SQL_RANKING_ODS = """
-SELECT MIN(o.ods) AS ods, COUNT(*) AS total
-FROM formato_inv_ods o
-JOIN formato_investigador fi ON fi.n_formato_inv = o.n_formato_inv
-JOIN investigador i ON i.codigo_ucsm = fi.codigo_ucsm
-WHERE i.activo
-GROUP BY substring(o.ods FROM '^ODS [0-9]+')
-ORDER BY total DESC, MIN(o.ods)
-LIMIT 5
-"""
-
-_SQL_TOP_ESCUELAS = """
-SELECT escuela_profesional AS escuela, COUNT(*) AS total
-FROM investigador
-WHERE activo
-GROUP BY escuela_profesional
-ORDER BY total DESC, escuela_profesional
-LIMIT 3
-"""
-
-
 def indicadores():
     """Indicadores del Dashboard (Reporte) calculados al momento, para la pagina de inicio:
     totales, ranking de ODS (top 5) y escuelas con mas investigadores (top 3)."""
-    datos = consultar_dicts(_SQL_INDICADORES)[0]
-    datos["ranking_ods"] = [(f["ods"], f["total"]) for f in consultar_dicts(_SQL_RANKING_ODS)]
-    datos["top_escuelas"] = [(f["escuela"], f["total"]) for f in consultar_dicts(_SQL_TOP_ESCUELAS)]
+    datos = consultar_procedimiento("sp_indicadores_inicio")[0]
+    datos["ranking_ods"] = [(f["ods"], f["total"])
+                            for f in consultar_procedimiento("sp_ranking_ods_inicio")]
+    datos["top_escuelas"] = [(f["escuela"], f["total"])
+                             for f in consultar_procedimiento("sp_top_escuelas_inicio")]
     return datos
 
 
@@ -79,13 +48,7 @@ def generar(fecha, coordinador):
 
 def emitidos():
     """Filas (fecha AAAA-MM-DD, coordinador) de los reportes ya generados."""
-    filas = consultar_dicts("""
-        SELECT r.anio, r.mes, r.dia,
-               p.apellido_paterno || ' ' || p.apellido_materno || ', ' || p.nombres AS coordinador
-        FROM reporte r
-        JOIN coordinador_repositorios c ON c.codigo_ucsm = r.codigo_ucsm_coordinador
-        JOIN persona p ON p.dni = c.dni
-        ORDER BY r.anio DESC, r.mes DESC, r.dia DESC""")
+    filas = consultar_procedimiento("sp_listar_reportes_emitidos")
     return [(f"{f['anio']:04d}-{f['mes']:02d}-{f['dia']:02d}", f["coordinador"]) for f in filas]
 
 
@@ -93,11 +56,10 @@ def detalle(fecha):
     """Texto con lo que guardo sp_generar_reporte para esa fecha."""
     d = u.fecha(fecha, "La fecha del reporte")
     lineas = [f"REPORTE DEL {d.isoformat()}", ""]
-    for titulo, tabla, columna in SECCIONES:
-        filas = consultar_dicts(
-            f"SELECT {columna} AS valor FROM {tabla} WHERE dia = %s AND mes = %s AND anio = %s "
-            f"ORDER BY 1", (d.day, d.month, d.year))
+    valores = consultar_procedimiento("sp_detalle_reporte", [d], ["date"])
+    for titulo, tabla, _columna in SECCIONES:
+        filas = [f["valor"] for f in valores if f["seccion"] == tabla]
         lineas.append(f"{titulo} ({len(filas)})")
-        lineas.extend(f"   - {f['valor']}" for f in filas)
+        lineas.extend(f"   - {valor}" for valor in filas)
         lineas.append("")
     return "\n".join(lineas)

@@ -2380,6 +2380,932 @@ BEGIN
   END IF;
 END; $$;
 
+
+--------------------------------------------------------------------------------
+-- F.5 Procedimientos de consulta y de operación del aplicativo (v1.5.0).
+-- El aplicativo no contiene instrucciones SQL: toda lectura y escritura se
+-- hace con CALL. Los procedimientos de consulta abren un cursor con el
+-- resultado en su último parámetro (INOUT p_resultado REFCURSOR); el
+-- aplicativo hace CALL sp_x(..., 'resultado') y FETCH ALL FROM resultado.
+--------------------------------------------------------------------------------
+
+-- Normaliza un DOI (quita https://doi.org/ y el prefijo doi:).
+CREATE OR REPLACE FUNCTION fn_doi_normalizado(p_doi TEXT) RETURNS TEXT
+LANGUAGE sql IMMUTABLE AS $$
+  SELECT lower(regexp_replace(regexp_replace(btrim(p_doi),
+         '^https?://(dx[.])?doi[.]org/', '', 'i'), '^doi:[[:space:]]*', '', 'i'))
+$$;
+
+-- F.5.1 Estado de la base (asistente de instalación y prueba de conexión).
+CREATE OR REPLACE PROCEDURE sp_estado_base(INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT split_part(version(), ',', 1) AS version, current_database() AS base,
+           current_user AS usuario,
+           (SELECT count(*) FROM information_schema.tables
+             WHERE table_schema = 'public' AND table_type = 'BASE TABLE') AS tablas,
+           (SELECT count(*) FROM pg_indexes
+             WHERE schemaname = 'public' AND indexname LIKE 'idx\_%') AS indices,
+           (SELECT count(*) FROM persona) AS filas_persona;
+END; $$;
+
+-- F.5.2 Inicio de sesión (la contraseña se verifica en el aplicativo).
+CREATE OR REPLACE PROCEDURE sp_login_coordinador(
+  p_correo VARCHAR, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT c.codigo_ucsm, c.correo_electronico, c.contrasenia, c.funcion, c.direccion_adscrita,
+           c.fecha_ocupacion_puesto, c.fecha_retiro,
+           p.nombres, p.apellido_paterno, p.apellido_materno
+      FROM coordinador_repositorios c
+      JOIN persona p ON p.dni = c.dni
+     WHERE lower(c.correo_electronico) = lower(p_correo);
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_login_investigador(
+  p_correo VARCHAR, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT c.id, c.dni, c.codigo_ucsm, c.correo_elec, c.password_hash,
+           c.estado_cuenta, s.id AS solicitud_id, s.estado
+      FROM cuenta_usuario c
+      JOIN LATERAL (
+        SELECT id, estado FROM solicitud_investigador
+         WHERE cuenta_investigador_id = c.id
+         ORDER BY creado_en DESC, id DESC LIMIT 1
+      ) s ON TRUE
+     WHERE lower(c.correo_elec) = lower(p_correo);
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_login_administrador(
+  p_correo VARCHAR, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT id, correo_elec, nombre, password_hash, estado_cuenta
+      FROM cuenta_usuario
+     WHERE rol = 'administrador' AND lower(btrim(correo_elec)) = lower(btrim(p_correo));
+END; $$;
+
+-- Crea la cuenta de administrador o, si el correo existe, la actualiza y reactiva.
+CREATE OR REPLACE PROCEDURE sp_guardar_administrador(
+  p_correo VARCHAR, p_nombre VARCHAR, p_password_hash VARCHAR)
+LANGUAGE plpgsql AS $$
+BEGIN
+  INSERT INTO cuenta_usuario (rol, correo_elec, nombre, password_hash)
+  VALUES ('administrador', lower(btrim(p_correo)), btrim(p_nombre), p_password_hash)
+  ON CONFLICT (rol, lower(btrim(correo_elec))) DO UPDATE
+     SET nombre = EXCLUDED.nombre,
+         password_hash = EXCLUDED.password_hash,
+         estado_cuenta = 'activa',
+         actualizado_en = CURRENT_TIMESTAMP;
+END; $$;
+
+-- F.5.3 Inicio del coordinador: tarjetas e indicadores.
+CREATE OR REPLACE PROCEDURE sp_resumen_coordinador(
+  p_codigo_coordinador BIGINT, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT (SELECT COUNT(*) FROM investigador WHERE activo) AS investigadores,
+           (SELECT COUNT(*) FROM patente WHERE activo)      AS patentes,
+           (SELECT COUNT(*) FROM historico WHERE activo)    AS publicaciones,
+           (SELECT COUNT(*) FROM reporte)                   AS reportes,
+           (SELECT COUNT(*) FROM reporte
+             WHERE codigo_ucsm_coordinador = p_codigo_coordinador) AS mis_reportes;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_indicadores_inicio(INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT (SELECT COUNT(*) FROM investigador WHERE activo) AS investigadores,
+           (SELECT COUNT(DISTINCT escuela_profesional) FROM investigador WHERE activo) AS escuelas,
+           (SELECT COUNT(*) FROM historico WHERE activo) AS publicaciones,
+           (SELECT COUNT(*) FROM patente WHERE activo)   AS patentes,
+           (SELECT COUNT(DISTINCT substring(o.ods FROM '^ODS ([0-9]+):'))
+              FROM formato_inv_ods o
+              JOIN formato_investigador fi ON fi.n_formato_inv = o.n_formato_inv
+              JOIN investigador i ON i.codigo_ucsm = fi.codigo_ucsm
+             WHERE i.activo) AS ods_vinculados;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_ranking_ods_inicio(INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT MIN(o.ods) AS ods, COUNT(*) AS total
+      FROM formato_inv_ods o
+      JOIN formato_investigador fi ON fi.n_formato_inv = o.n_formato_inv
+      JOIN investigador i ON i.codigo_ucsm = fi.codigo_ucsm
+     WHERE i.activo
+     GROUP BY substring(o.ods FROM '^ODS [0-9]+')
+     ORDER BY total DESC, MIN(o.ods)
+     LIMIT 5;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_top_escuelas_inicio(INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT escuela_profesional AS escuela, COUNT(*) AS total
+      FROM investigador WHERE activo
+     GROUP BY escuela_profesional
+     ORDER BY total DESC, escuela_profesional
+     LIMIT 3;
+END; $$;
+
+-- F.5.4 Investigadores. p_estado: activos | bajas | todos.
+CREATE OR REPLACE PROCEDURE sp_listar_investigadores(
+  p_filtro VARCHAR, p_estado VARCHAR, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT i.codigo_ucsm,
+           pe.apellido_paterno || ' ' || pe.apellido_materno || ', ' || pe.nombres AS nombre,
+           i.escuela_profesional, i.correo_elec, i.n_celular,
+           i.activo, i.fecha_baja, i.motivo_baja
+      FROM investigador i
+      JOIN persona pe ON pe.dni = i.dni
+     WHERE (COALESCE(p_filtro, '') = ''
+            OR (pe.nombres || ' ' || pe.apellido_paterno || ' ' || pe.apellido_materno
+                || ' ' || i.codigo_ucsm::text) ILIKE '%' || p_filtro || '%')
+       AND (p_estado = 'todos' OR i.activo = (p_estado = 'activos'))
+     ORDER BY pe.apellido_paterno, pe.apellido_materno, pe.nombres;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_listar_escuelas_activas(INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT DISTINCT escuela_profesional FROM investigador
+     WHERE activo ORDER BY escuela_profesional;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_obtener_investigador(
+  p_codigo BIGINT, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT i.codigo_ucsm, pe.dni, pe.nombres, pe.apellido_paterno, pe.apellido_materno,
+           pe.genero, pe.fecha_nacimiento,
+           i.escuela_profesional AS escuela, i.n_celular AS celular, i.correo_elec AS correo,
+           i.pure_person_id, i.pure_estado, i.pure_registrado_por, i.pure_registrado_en,
+           i.activo, i.fecha_baja, i.motivo_baja,
+           fi.codigo_orcid AS orcid, fi.scopus_id, fi.link_cti_vitae AS link_cti,
+           fi.foto_perfil AS foto, fi.resumen_academico AS resumen,
+           COALESCE((SELECT array_agg(o.ods ORDER BY o.ods)
+                       FROM formato_inv_ods o WHERE o.n_formato_inv = fi.n_formato_inv), '{}') AS ods,
+           COALESCE((SELECT array_agg(t.intereses_invest ORDER BY t.intereses_invest)
+                       FROM formato_inv_intereses t WHERE t.n_formato_inv = fi.n_formato_inv), '{}') AS intereses
+      FROM investigador i
+      JOIN persona pe ON pe.dni = i.dni
+      JOIN formato_investigador fi ON fi.codigo_ucsm = i.codigo_ucsm
+     WHERE i.codigo_ucsm = p_codigo;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_listar_pure_pendientes(INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT i.codigo_ucsm, p.nombres, p.apellido_paterno, p.apellido_materno,
+           i.correo_elec, i.pure_estado
+      FROM investigador i
+      JOIN persona p ON p.dni = i.dni
+     WHERE i.pure_estado = 'pendiente_manual' AND i.activo
+     ORDER BY p.apellido_paterno, p.nombres;
+END; $$;
+
+-- F.5.5 Patentes.
+CREATE OR REPLACE PROCEDURE sp_listar_patentes(
+  p_estado VARCHAR, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT pa.n_patente, pa.titulo_patente, pa.fecha_registro, pa.pais,
+           COALESCE((SELECT string_agg(i.inventores, '; ' ORDER BY i.inventores)
+                       FROM formato_paten_inventores i
+                      WHERE i.n_formato_pat = fp.n_formato_pat), '') AS inventores,
+           pa.activo, pa.fecha_baja, pa.motivo_baja
+      FROM patente pa
+      JOIN formato_patente fp ON fp.n_patente = pa.n_patente
+     WHERE p_estado = 'todos' OR pa.activo = (p_estado = 'activos')
+     ORDER BY pa.fecha_registro DESC, pa.n_patente;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_obtener_patente(
+  p_n_patente VARCHAR, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT pa.n_patente, pa.titulo_patente AS titulo, pa.editorial, pa.fecha_registro,
+           pa.cip, pa.pais, pa.activo, pa.fecha_baja, pa.motivo_baja,
+           COALESCE((SELECT array_agg(fi.codigo_ucsm ORDER BY fi.codigo_ucsm)
+                       FROM formato_patente_investigador fpi
+                       JOIN formato_investigador fi ON fi.n_formato_inv = fpi.n_formato_inv
+                      WHERE fpi.n_formato_pat = fp.n_formato_pat), '{}') AS inventores,
+           COALESCE((SELECT array_agg(o.campo_ocde ORDER BY o.campo_ocde)
+                       FROM formato_paten_ocde o WHERE o.n_formato_pat = fp.n_formato_pat), '{}') AS campos,
+           COALESCE((SELECT array_agg(o.objetivos_ocde ORDER BY o.campo_ocde)
+                       FROM formato_paten_ocde o WHERE o.n_formato_pat = fp.n_formato_pat), '{}') AS objetivos
+      FROM patente pa
+      JOIN formato_patente fp ON fp.n_patente = pa.n_patente
+     WHERE pa.n_patente = p_n_patente;
+END; $$;
+
+-- Solicitudes de patente: por id, por investigador o las pendientes de revisión.
+CREATE OR REPLACE PROCEDURE sp_listar_solicitudes_patente(
+  p_id BIGINT, p_solicitante BIGINT, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT s.id, s.solicitante_codigo_ucsm, s.estado, s.n_patente,
+           s.titulo_patente, s.editorial, s.fecha_registro, s.cip, s.pais,
+           s.version_actual, s.creada_en,
+           p.nombres, p.apellido_paterno, p.apellido_materno,
+           COALESCE((SELECT array_agg(x.codigo_ucsm ORDER BY x.codigo_ucsm)
+                       FROM solicitud_patente_investigador x
+                      WHERE x.solicitud_patente_id = s.id), '{}') AS inventores,
+           COALESCE((SELECT jsonb_agg(jsonb_build_object(
+                              'campo', o.campo_ocde, 'objetivo', o.objetivo_ocde)
+                            ORDER BY o.campo_ocde)
+                       FROM solicitud_patente_ocde o
+                      WHERE o.solicitud_patente_id = s.id), '[]'::jsonb) AS clasificacion_ocde
+      FROM solicitud_patente s
+      JOIN investigador i ON i.codigo_ucsm = s.solicitante_codigo_ucsm
+      JOIN persona p ON p.dni = i.dni
+     WHERE (p_id IS NOT NULL AND s.id = p_id)
+        OR (p_id IS NULL AND p_solicitante IS NOT NULL AND s.solicitante_codigo_ucsm = p_solicitante)
+        OR (p_id IS NULL AND p_solicitante IS NULL
+            AND s.estado IN ('pendiente_revision', 'observada'))
+     ORDER BY CASE WHEN p_id IS NULL AND p_solicitante IS NULL
+                   THEN CASE s.estado WHEN 'pendiente_revision' THEN 0 ELSE 1 END END,
+              CASE WHEN p_solicitante IS NOT NULL THEN s.creada_en END DESC,
+              s.creada_en, s.id;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_revisiones_solicitud_patente(
+  p_id BIGINT, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT version_evaluada, resultado, datos_evaluados, motivo, resuelto_por, resuelto_en
+      FROM revision_solicitud
+     WHERE solicitud_patente_id = p_id
+     ORDER BY version_evaluada;
+END; $$;
+
+-- F.5.6 Postulaciones de investigadores.
+CREATE OR REPLACE PROCEDURE sp_obtener_solicitud_investigador(
+  p_id BIGINT, p_cuenta BIGINT, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT s.id, s.cuenta_investigador_id, c.dni, c.codigo_ucsm, c.correo_elec,
+           s.estado, s.nombres, s.apellido_paterno, s.apellido_materno, s.genero,
+           s.fecha_nacimiento, s.escuela_profesional, s.n_celular,
+           s.codigo_orcid, s.scopus_id, s.link_cti_vitae, s.resumen_academico,
+           s.foto_referencia, s.version_actual, s.enviada_en, s.creado_en AS creada_en,
+           COALESCE((SELECT array_agg(o.ods ORDER BY o.ods)
+                       FROM solicitud_investigador_ods o WHERE o.solicitud_id = s.id), '{}') AS ods,
+           COALESCE((SELECT array_agg(i.interes ORDER BY i.interes)
+                       FROM solicitud_investigador_interes i WHERE i.solicitud_id = s.id), '{}') AS intereses,
+           (SELECT r.motivo FROM revision_solicitud r
+             WHERE r.solicitud_id = s.id
+             ORDER BY r.resuelto_en DESC, r.id DESC LIMIT 1) AS ultima_observacion
+      FROM solicitud_investigador s
+      JOIN cuenta_usuario c ON c.id = s.cuenta_investigador_id
+     WHERE (p_id IS NOT NULL AND s.id = p_id)
+        OR (p_id IS NULL AND s.cuenta_investigador_id = p_cuenta)
+     ORDER BY s.creado_en DESC, s.id DESC
+     LIMIT 1;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_verificaciones_solicitud(
+  p_id BIGINT, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT v.fuente, v.metodo, v.resultado, v.verificado_por, v.verificado_en,
+           v.referencia_evidencia, v.nota, sv.numero_version
+      FROM verificacion_solicitud v
+      JOIN solicitud_investigador_version sv ON sv.id = v.version_id
+     WHERE v.solicitud_id = p_id
+     ORDER BY v.verificado_en, v.id;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_revisiones_solicitud(
+  p_id BIGINT, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT r.resultado, r.motivo, r.resuelto_por, r.resuelto_en, v.numero_version
+      FROM revision_solicitud r
+      JOIN solicitud_investigador_version v ON v.id = r.version_id
+     WHERE r.solicitud_id = p_id
+     ORDER BY r.resuelto_en, r.id;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_listar_solicitudes_investigador(INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT s.id, c.correo_elec, c.dni, c.codigo_ucsm, s.estado,
+           s.enviada_en AS creada_en,
+           s.nombres, s.apellido_paterno, s.apellido_materno, s.codigo_orcid,
+           s.scopus_id, s.version_actual
+      FROM solicitud_investigador s
+      JOIN cuenta_usuario c ON c.id = s.cuenta_investigador_id
+     WHERE s.estado IN ('pendiente_revision', 'observada')
+     ORDER BY CASE s.estado WHEN 'pendiente_revision' THEN 0 ELSE 1 END,
+              s.enviada_en, s.id;
+END; $$;
+
+-- F.5.7 Histórico de publicaciones.
+CREATE OR REPLACE PROCEDURE sp_listar_historico(
+  p_filtro VARCHAR, p_estado VARCHAR, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT h.uuid::text AS uuid, h.title, h.publication_year, h.type, h.language, h.category,
+           h.activo, h.fecha_baja, h.motivo_baja
+      FROM historico h
+     WHERE (COALESCE(p_filtro, '') = '' OR h.title ILIKE '%' || p_filtro || '%')
+       AND (p_estado = 'todos' OR h.activo = (p_estado = 'activos'))
+     ORDER BY h.publication_year DESC, h.title;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_obtener_historico(
+  p_uuid UUID, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT h.*, h.uuid::text AS uuid_texto,
+      COALESCE((SELECT array_agg(c.contributors ORDER BY c.contributors)
+                  FROM historico_contributors c WHERE c.uuid = h.uuid), '{}') AS contributors,
+      COALESCE((SELECT array_agg(i.identifiers ORDER BY i.identifiers)
+                  FROM historico_identifiers i WHERE i.uuid = h.uuid), '{}') AS identifiers,
+      COALESCE((SELECT array_agg(e.electronic_versions ORDER BY e.electronic_versions)
+                  FROM historico_electronic_versions e WHERE e.uuid = h.uuid), '{}') AS electronic_versions,
+      COALESCE((SELECT array_agg(k.keywords_groups ORDER BY k.keywords_groups)
+                  FROM historico_keywords_groups k WHERE k.uuid = h.uuid), '{}') AS keywords_groups,
+      COALESCE((SELECT array_agg(s.publication_status ORDER BY s.publication_status)
+                  FROM historico_publication_status s WHERE s.uuid = h.uuid), '{}') AS publication_status,
+      COALESCE((SELECT jsonb_agg(jsonb_build_object('pure_id', l.pure_id, 'link_type', l.link_type,
+                                                   'url', l.url, 'description', l.description))
+                  FROM historico_links l WHERE l.uuid = h.uuid), '[]'::jsonb) AS links
+      FROM historico h
+     WHERE h.uuid = p_uuid;
+END; $$;
+
+-- Resumen del Histórico. p_seccion: totales | por_anio | por_tipo | por_escuela
+-- | por_ods | uso_12_meses | ultimo_mes.
+CREATE OR REPLACE PROCEDURE sp_resumen_repositorio(
+  p_seccion VARCHAR, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  CASE p_seccion
+  WHEN 'totales' THEN
+    OPEN p_resultado FOR
+      SELECT COUNT(*) AS publicaciones, max(synced_at) AS ultima_sincronizacion,
+             COUNT(DISTINCT type) AS tipos
+        FROM historico WHERE activo;
+  WHEN 'por_anio' THEN
+    OPEN p_resultado FOR
+      SELECT publication_year AS anio, COUNT(*) AS total
+        FROM historico WHERE activo
+       GROUP BY publication_year ORDER BY publication_year DESC LIMIT 8;
+  WHEN 'por_tipo' THEN
+    OPEN p_resultado FOR
+      SELECT type AS tipo, COUNT(*) AS total
+        FROM historico WHERE activo
+       GROUP BY type ORDER BY total DESC, type LIMIT 8;
+  WHEN 'por_escuela' THEN
+    OPEN p_resultado FOR
+      SELECT i.escuela_profesional AS escuela, COUNT(DISTINCT ih.uuid) AS total
+        FROM investigador_historico ih
+        JOIN investigador i ON i.codigo_ucsm = ih.codigo_ucsm
+        JOIN historico h ON h.uuid = ih.uuid AND h.activo
+       GROUP BY i.escuela_profesional ORDER BY total DESC, escuela LIMIT 8;
+  WHEN 'por_ods' THEN
+    OPEN p_resultado FOR
+      SELECT o.ods, COUNT(DISTINCT ih.uuid) AS total
+        FROM investigador_historico ih
+        JOIN formato_investigador f ON f.codigo_ucsm = ih.codigo_ucsm
+        JOIN formato_inv_ods o ON o.n_formato_inv = f.n_formato_inv
+        JOIN historico h ON h.uuid = ih.uuid AND h.activo
+       GROUP BY o.ods ORDER BY total DESC, o.ods LIMIT 8;
+  WHEN 'uso_12_meses' THEN
+    OPEN p_resultado FOR
+      WITH ultimo AS (SELECT max(periodo) AS fin FROM uso_suscripcion)
+      SELECT u.plataforma, SUM(u.valor) AS total
+        FROM uso_suscripcion u, ultimo
+       WHERE u.metrica = 'Total_Item_Requests'
+         AND u.periodo > ultimo.fin - INTERVAL '12 months'
+       GROUP BY u.plataforma ORDER BY total DESC;
+  WHEN 'ultimo_mes' THEN
+    OPEN p_resultado FOR
+      SELECT to_char(max(periodo), 'YYYY-MM') AS mes FROM uso_suscripcion;
+  ELSE
+    RAISE EXCEPTION 'Sección de resumen desconocida: %', p_seccion;
+  END CASE;
+END; $$;
+
+-- F.5.8 Reportes emitidos.
+CREATE OR REPLACE PROCEDURE sp_listar_reportes_emitidos(INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT r.anio, r.mes, r.dia,
+           p.apellido_paterno || ' ' || p.apellido_materno || ', ' || p.nombres AS coordinador
+      FROM reporte r
+      JOIN coordinador_repositorios c ON c.codigo_ucsm = r.codigo_ucsm_coordinador
+      JOIN persona p ON p.dni = c.dni
+     ORDER BY r.anio DESC, r.mes DESC, r.dia DESC;
+END; $$;
+
+-- Valores guardados por sp_generar_reporte para una fecha (sección, valor).
+CREATE OR REPLACE PROCEDURE sp_detalle_reporte(
+  p_fecha DATE, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+DECLARE
+  d INT := EXTRACT(DAY FROM p_fecha); m INT := EXTRACT(MONTH FROM p_fecha);
+  a INT := EXTRACT(YEAR FROM p_fecha);
+BEGIN
+  OPEN p_resultado FOR
+    SELECT x.seccion, x.valor FROM (
+      SELECT 1 AS orden, 'total_publicaciones' AS seccion, publicacion::text AS valor
+        FROM total_publicaciones WHERE dia = d AND mes = m AND anio = a
+      UNION ALL SELECT 2, 'total_investigadores', investigador::text
+        FROM total_investigadores WHERE dia = d AND mes = m AND anio = a
+      UNION ALL SELECT 3, 'cantidad_escuelas_prof', escuelas_prof::text
+        FROM cantidad_escuelas_prof WHERE dia = d AND mes = m AND anio = a
+      UNION ALL SELECT 4, 'cantidad_ods_vinculados', ods_vinc::text
+        FROM cantidad_ods_vinculados WHERE dia = d AND mes = m AND anio = a
+      UNION ALL SELECT 5, 'top_escu_invest', top_escu_invest::text
+        FROM top_escu_invest WHERE dia = d AND mes = m AND anio = a
+      UNION ALL SELECT 6, 'rankings_ods', ranking_ods::text
+        FROM rankings_ods WHERE dia = d AND mes = m AND anio = a
+      UNION ALL SELECT 7, 'distribuciones_ods', distribucion_ods::text
+        FROM distribuciones_ods WHERE dia = d AND mes = m AND anio = a
+      UNION ALL SELECT 8, 'tops_escuelas', top_escuelas::text
+        FROM tops_escuelas WHERE dia = d AND mes = m AND anio = a
+    ) x
+    ORDER BY x.orden, x.valor;
+END; $$;
+
+-- F.5.9 Uso de suscripciones (COUNTER 5).
+-- p_registros: arreglo JSON de {plataforma, periodo (AAAA-MM-01), metrica, valor}.
+-- Reimportar el mismo mes actualiza el valor. Devuelve ejecucion_id, creados y actualizados.
+CREATE OR REPLACE PROCEDURE sp_importar_uso_suscripcion(
+  p_sistema VARCHAR, p_disparador VARCHAR, p_coordinador BIGINT, p_archivo VARCHAR,
+  p_proveedor VARCHAR, p_registros JSONB, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_id BIGINT; v_creados INT := 0; v_actualizados INT := 0;
+  r JSONB; v_creado BOOLEAN;
+BEGIN
+  IF jsonb_typeof(p_registros) <> 'array' OR jsonb_array_length(p_registros) = 0 THEN
+    RAISE EXCEPTION 'No hay registros de uso para importar.';
+  END IF;
+  INSERT INTO integracion_ejecucion
+    (sistema, operacion, disparador, estado, iniciada_en, finalizada_en,
+     registros_leidos, codigo_ucsm_coordinador, archivo)
+  VALUES (p_sistema, 'importar_uso_counter', p_disparador, 'iniciada', CURRENT_TIMESTAMP, NULL,
+          jsonb_array_length(p_registros), p_coordinador, NULLIF(left(COALESCE(p_archivo, ''), 255), ''))
+  RETURNING id INTO v_id;
+  FOR r IN SELECT * FROM jsonb_array_elements(p_registros) LOOP
+    INSERT INTO uso_suscripcion (plataforma, proveedor, periodo, metrica, valor, ejecucion_id)
+    VALUES (r->>'plataforma', left(COALESCE(p_proveedor, 'Elsevier'), 80), (r->>'periodo')::date,
+            r->>'metrica', (r->>'valor')::int, v_id)
+    ON CONFLICT (plataforma, periodo, metrica) DO UPDATE
+       SET valor = EXCLUDED.valor, proveedor = EXCLUDED.proveedor,
+           ejecucion_id = EXCLUDED.ejecucion_id, actualizado_en = CURRENT_TIMESTAMP
+    RETURNING (xmax = 0) INTO v_creado;
+    IF v_creado THEN v_creados := v_creados + 1; ELSE v_actualizados := v_actualizados + 1; END IF;
+  END LOOP;
+  UPDATE integracion_ejecucion
+     SET estado = 'completada', finalizada_en = CURRENT_TIMESTAMP,
+         registros_creados = v_creados, registros_actualizados = v_actualizados
+   WHERE id = v_id;
+  OPEN p_resultado FOR
+    SELECT v_id AS ejecucion_id, v_creados AS creados, v_actualizados AS actualizados;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_opciones_uso(INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT array_agg(DISTINCT plataforma ORDER BY plataforma) AS plataformas,
+           array_agg(DISTINCT metrica ORDER BY metrica) AS metricas,
+           min(periodo) AS desde, max(periodo) AS hasta
+      FROM uso_suscripcion;
+END; $$;
+
+-- Valores por plataforma y mes. Un filtro NULL significa "sin filtro";
+-- p_metrica NULL devuelve todas las métricas (exportación CSV).
+CREATE OR REPLACE PROCEDURE sp_consultar_uso(
+  p_metrica VARCHAR, p_plataformas VARCHAR[], p_desde DATE, p_hasta DATE,
+  INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT plataforma, proveedor, to_char(periodo, 'YYYY-MM') AS periodo, metrica, valor
+      FROM uso_suscripcion
+     WHERE (p_metrica IS NULL OR metrica = p_metrica)
+       AND (p_plataformas IS NULL OR cardinality(p_plataformas) = 0 OR plataforma = ANY(p_plataformas))
+       AND (p_desde IS NULL OR periodo >= p_desde)
+       AND (p_hasta IS NULL OR periodo <= p_hasta)
+     ORDER BY periodo, plataforma, metrica;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_listar_importaciones_uso(
+  p_limite INT, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT e.id, e.sistema, e.archivo, e.estado, e.iniciada_en, e.registros_leidos,
+           e.registros_creados, e.registros_actualizados, e.codigo_ucsm_coordinador
+      FROM integracion_ejecucion e
+     WHERE e.sistema IN ('counter', 'sushi')
+     ORDER BY e.iniciada_en DESC, e.id DESC
+     LIMIT p_limite;
+END; $$;
+
+-- F.5.10 Catálogo para el CRUD del administrador.
+CREATE OR REPLACE PROCEDURE sp_admin_listar_tablas(INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT c.relname AS nombre, GREATEST(c.reltuples, 0)::BIGINT AS filas_estimadas
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'public' AND c.relkind = 'r'
+     ORDER BY c.relname;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_admin_describir_tabla(
+  p_tabla TEXT, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT a.attname::text AS nombre,
+           format_type(a.atttypid, a.atttypmod) AS tipo,
+           NOT a.attnotnull AS nullable,
+           pg_get_expr(d.adbin, d.adrelid) AS por_defecto,
+           a.attidentity::text AS identidad,
+           a.attgenerated::text AS generada,
+           COALESCE(a.attnum = ANY (i.indkey), FALSE) AS clave_primaria
+      FROM pg_attribute a
+      JOIN pg_class c ON c.oid = a.attrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+      LEFT JOIN pg_index i ON i.indrelid = c.oid AND i.indisprimary
+     WHERE n.nspname = 'public' AND c.relname = p_tabla
+       AND a.attnum > 0 AND NOT a.attisdropped
+     ORDER BY a.attnum;
+END; $$;
+
+-- Página de filas de cualquier tabla como JSON, con el total de coincidencias.
+CREATE OR REPLACE PROCEDURE sp_admin_listar_filas(
+  p_tabla TEXT, p_buscar TEXT, p_orden TEXT[], p_limite INT, p_desplazamiento INT,
+  INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_filtro TEXT := '';
+  v_orden TEXT;
+BEGIN
+  PERFORM fn_admin_validar_tabla(p_tabla);
+  IF COALESCE(btrim(p_buscar), '') <> '' THEN
+    v_filtro := ' WHERE t::text ILIKE $1';
+  END IF;
+  SELECT string_agg(format('t.%I', c), ', ') INTO v_orden FROM unnest(p_orden) AS c;
+  OPEN p_resultado FOR EXECUTE format(
+    'SELECT to_jsonb(t) AS fila, COUNT(*) OVER () AS total FROM %I AS t%s '
+    'ORDER BY %s LIMIT $2 OFFSET $3', p_tabla, v_filtro, COALESCE(v_orden, '1'))
+    USING '%' || btrim(COALESCE(p_buscar, '')) || '%', p_limite, p_desplazamiento;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_admin_contar_filas(
+  p_tabla TEXT, p_buscar TEXT, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_filtro TEXT := '';
+BEGIN
+  PERFORM fn_admin_validar_tabla(p_tabla);
+  IF COALESCE(btrim(p_buscar), '') <> '' THEN
+    v_filtro := ' WHERE t::text ILIKE $1';
+  END IF;
+  OPEN p_resultado FOR EXECUTE format('SELECT COUNT(*) AS total FROM %I AS t%s', p_tabla, v_filtro)
+    USING '%' || btrim(COALESCE(p_buscar, '')) || '%';
+END; $$;
+
+-- F.5.11 Publicaciones candidatas importadas desde Pure.
+CREATE OR REPLACE PROCEDURE sp_validar_coordinador_activo(p_codigo BIGINT)
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM coordinador_repositorios
+                  WHERE codigo_ucsm = p_codigo AND fecha_retiro IS NULL) THEN
+    RAISE EXCEPTION 'El coordinador no existe o ya fue retirado.';
+  END IF;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_pure_uuids_en_historico(
+  p_ids TEXT[], INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT uuid::text AS uuid FROM historico WHERE uuid::text = ANY(p_ids);
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_pure_ids_candidatas(
+  p_ids TEXT[], INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT id_fuente FROM publicacion_candidata
+     WHERE fuente = 'pure' AND id_fuente = ANY(p_ids);
+END; $$;
+
+-- DOI que ya existen en el histórico o en otra candidatura.
+CREATE OR REPLACE PROCEDURE sp_pure_dois_existentes(
+  p_dois TEXT[], INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT fn_doi_normalizado(e.electronic_versions) AS doi
+      FROM historico_electronic_versions e
+     WHERE fn_doi_normalizado(e.electronic_versions) = ANY(p_dois)
+    UNION
+    SELECT fn_doi_normalizado(c.doi_normalizado)
+      FROM publicacion_candidata c
+     WHERE fn_doi_normalizado(c.doi_normalizado) = ANY(p_dois);
+END; $$;
+
+-- DOI repetidos entre candidaturas o ya presentes en el histórico.
+CREATE OR REPLACE PROCEDURE sp_pure_dois_duplicados(
+  p_dois TEXT[], INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT doi FROM (
+      SELECT fn_doi_normalizado(doi_normalizado) AS doi
+        FROM publicacion_candidata
+       WHERE fn_doi_normalizado(doi_normalizado) = ANY(p_dois)) candidatas
+     GROUP BY doi HAVING COUNT(*) > 1
+    UNION
+    SELECT fn_doi_normalizado(e.electronic_versions)
+      FROM historico_electronic_versions e
+     WHERE fn_doi_normalizado(e.electronic_versions) = ANY(p_dois);
+END; $$;
+
+-- Investigadores con ID de persona de Pure (p_uuids NULL = todos).
+CREATE OR REPLACE PROCEDURE sp_pure_personas(
+  p_uuids TEXT[], INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT btrim(pure_person_id) AS pure_person_id, codigo_ucsm
+      FROM investigador
+     WHERE pure_person_id IS NOT NULL AND btrim(pure_person_id) <> ''
+       AND (p_uuids IS NULL OR btrim(pure_person_id) = ANY(p_uuids));
+END; $$;
+
+-- Inserta la candidatura; si ya existía no devuelve filas.
+CREATE OR REPLACE PROCEDURE sp_insertar_candidata_pure(
+  p_id_fuente VARCHAR, p_doi VARCHAR, p_titulo VARCHAR, p_anio INT, p_tipo VARCHAR,
+  p_metadatos JSONB, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_id BIGINT;
+BEGIN
+  INSERT INTO publicacion_candidata
+    (fuente, id_fuente, doi_normalizado, titulo, anio_publicacion, tipo, metadatos_origen)
+  VALUES ('pure', p_id_fuente, p_doi, p_titulo, p_anio, p_tipo, p_metadatos)
+  ON CONFLICT (fuente, id_fuente) DO NOTHING
+  RETURNING id INTO v_id;
+  OPEN p_resultado FOR SELECT v_id AS id WHERE v_id IS NOT NULL;
+END; $$;
+
+-- Vincula un investigador a una candidatura; devuelve 1 si se creó el vínculo.
+CREATE OR REPLACE PROCEDURE sp_vincular_candidata_investigador(
+  p_candidata BIGINT, p_codigo BIGINT, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_filas INT;
+BEGIN
+  INSERT INTO publicacion_candidata_investigador (publicacion_candidata_id, codigo_ucsm)
+  VALUES (p_candidata, p_codigo) ON CONFLICT DO NOTHING;
+  GET DIAGNOSTICS v_filas = ROW_COUNT;
+  OPEN p_resultado FOR SELECT v_filas AS creados;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_contar_candidatas_lote(
+  p_lote VARCHAR, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT COUNT(*) AS total FROM publicacion_candidata
+     WHERE fuente = 'pure' AND metadatos_origen #>> '{importacion,sha256}' = p_lote;
+END; $$;
+
+-- Candidaturas de un lote. p_solo_pendientes filtra por estado; p_bloquear las
+-- reserva (FOR UPDATE) para aprobar el lote.
+CREATE OR REPLACE PROCEDURE sp_candidatas_lote(
+  p_lote VARCHAR, p_solo_pendientes BOOLEAN, p_bloquear BOOLEAN,
+  INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF p_bloquear THEN
+    OPEN p_resultado FOR
+      SELECT id, id_fuente, titulo, anio_publicacion, tipo, doi_normalizado, estado, metadatos_origen
+        FROM publicacion_candidata
+       WHERE fuente = 'pure' AND metadatos_origen #>> '{importacion,sha256}' = p_lote
+         AND (NOT p_solo_pendientes OR estado = 'pendiente')
+       ORDER BY id FOR UPDATE;
+  ELSE
+    OPEN p_resultado FOR
+      SELECT id, id_fuente, titulo, anio_publicacion, tipo, doi_normalizado, estado, metadatos_origen
+        FROM publicacion_candidata
+       WHERE fuente = 'pure' AND metadatos_origen #>> '{importacion,sha256}' = p_lote
+         AND (NOT p_solo_pendientes OR estado = 'pendiente')
+       ORDER BY id;
+  END IF;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_vinculos_candidatas(
+  p_ids BIGINT[], p_bloquear BOOLEAN, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF p_bloquear THEN
+    OPEN p_resultado FOR
+      SELECT r.publicacion_candidata_id, r.codigo_ucsm, r.estado_revision,
+             btrim(i.pure_person_id) AS pure_person_id
+        FROM publicacion_candidata_investigador r
+        JOIN investigador i ON i.codigo_ucsm = r.codigo_ucsm
+       WHERE r.publicacion_candidata_id = ANY(p_ids)
+       ORDER BY r.publicacion_candidata_id, r.codigo_ucsm
+         FOR UPDATE OF r, i;
+  ELSE
+    OPEN p_resultado FOR
+      SELECT r.publicacion_candidata_id, r.codigo_ucsm, r.estado_revision,
+             btrim(i.pure_person_id) AS pure_person_id
+        FROM publicacion_candidata_investigador r
+        JOIN investigador i ON i.codigo_ucsm = r.codigo_ucsm
+       WHERE r.publicacion_candidata_id = ANY(p_ids)
+       ORDER BY r.publicacion_candidata_id, r.codigo_ucsm;
+  END IF;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_listar_candidatas(
+  p_filtro VARCHAR, p_limite INT, p_desplazamiento INT,
+  INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT id, id_fuente, titulo, anio_publicacion, tipo, doi_normalizado, estado, creada_en,
+           (SELECT COUNT(*) FROM publicacion_candidata_investigador x
+             WHERE x.publicacion_candidata_id = c.id AND x.estado_revision = 'pendiente') AS pendientes,
+           (SELECT COUNT(*) FROM publicacion_candidata_investigador x
+             WHERE x.publicacion_candidata_id = c.id AND x.estado_revision = 'aceptada') AS aceptadas,
+           COUNT(*) OVER () AS total
+      FROM publicacion_candidata c
+     WHERE fuente = 'pure' AND estado <> 'descartada'
+       AND (COALESCE(p_filtro, '') = '' OR titulo ILIKE '%' || p_filtro || '%'
+            OR id_fuente ILIKE '%' || p_filtro || '%'
+            OR COALESCE(doi_normalizado, '') ILIKE '%' || p_filtro || '%')
+     ORDER BY CASE estado WHEN 'pendiente' THEN 0 ELSE 1 END, creada_en DESC, id
+     LIMIT p_limite OFFSET p_desplazamiento;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_contar_candidatas(
+  p_filtro VARCHAR, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT COUNT(*) AS total
+      FROM publicacion_candidata
+     WHERE fuente = 'pure' AND estado <> 'descartada'
+       AND (COALESCE(p_filtro, '') = '' OR titulo ILIKE '%' || p_filtro || '%'
+            OR id_fuente ILIKE '%' || p_filtro || '%'
+            OR COALESCE(doi_normalizado, '') ILIKE '%' || p_filtro || '%');
+END; $$;
+
+-- Una candidatura de Pure. p_bloquear la reserva para modificarla.
+CREATE OR REPLACE PROCEDURE sp_obtener_candidata(
+  p_id BIGINT, p_bloquear BOOLEAN, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF p_bloquear THEN
+    OPEN p_resultado FOR
+      SELECT id, id_fuente, titulo, anio_publicacion, tipo, doi_normalizado, estado,
+             creada_en, metadatos_origen
+        FROM publicacion_candidata WHERE id = p_id AND fuente = 'pure' FOR UPDATE;
+  ELSE
+    OPEN p_resultado FOR
+      SELECT id, id_fuente, titulo, anio_publicacion, tipo, doi_normalizado, estado,
+             creada_en, metadatos_origen
+        FROM publicacion_candidata WHERE id = p_id AND fuente = 'pure';
+  END IF;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_investigadores_candidata(
+  p_id BIGINT, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT r.codigo_ucsm,
+           p.apellido_paterno || ' ' || p.apellido_materno || ', ' || p.nombres AS nombre,
+           r.estado_revision, r.motivo, i.pure_person_id
+      FROM publicacion_candidata_investigador r
+      JOIN investigador i ON i.codigo_ucsm = r.codigo_ucsm
+      JOIN persona p ON p.dni = i.dni
+     WHERE r.publicacion_candidata_id = p_id
+     ORDER BY nombre;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_doi_duplicado_candidata(
+  p_doi VARCHAR, p_id BIGINT, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT EXISTS (
+      SELECT 1 FROM historico_electronic_versions
+       WHERE fn_doi_normalizado(electronic_versions) = p_doi
+      UNION ALL
+      SELECT 1 FROM publicacion_candidata
+       WHERE id <> p_id AND fn_doi_normalizado(doi_normalizado) = p_doi
+    ) AS existe;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_guardar_curacion_candidata(
+  p_id BIGINT, p_titulo VARCHAR, p_anio INT, p_tipo VARCHAR, p_metadatos JSONB)
+LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE publicacion_candidata
+     SET titulo = p_titulo, anio_publicacion = p_anio, tipo = p_tipo,
+         metadatos_origen = p_metadatos, actualizada_en = CURRENT_TIMESTAMP
+   WHERE id = p_id;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_descartar_candidata(p_id BIGINT, p_metadatos JSONB)
+LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE publicacion_candidata
+     SET estado = 'descartada', metadatos_origen = p_metadatos,
+         actualizada_en = CURRENT_TIMESTAMP
+   WHERE id = p_id;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_bloquear_vinculo_candidata(
+  p_id BIGINT, p_codigo BIGINT, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT estado_revision FROM publicacion_candidata_investigador
+     WHERE publicacion_candidata_id = p_id AND codigo_ucsm = p_codigo FOR UPDATE;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_existe_historico(
+  p_uuid UUID, INOUT p_resultado REFCURSOR DEFAULT 'resultado')
+LANGUAGE plpgsql AS $$
+BEGIN
+  OPEN p_resultado FOR
+    SELECT EXISTS (SELECT 1 FROM historico WHERE uuid = p_uuid) AS existe;
+END; $$;
+
+-- Acepta el vínculo: lo marca aceptado, une al investigador con la publicación
+-- y deja la candidatura como consolidada.
+CREATE OR REPLACE PROCEDURE sp_aceptar_vinculo_candidata(
+  p_id BIGINT, p_codigo BIGINT, p_coordinador BIGINT, p_uuid UUID)
+LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE publicacion_candidata_investigador
+     SET estado_revision = 'aceptada', revisado_por = p_coordinador,
+         revisado_en = CURRENT_TIMESTAMP, motivo = NULL
+   WHERE publicacion_candidata_id = p_id AND codigo_ucsm = p_codigo;
+  INSERT INTO investigador_historico
+    (codigo_ucsm, uuid, publicacion_candidata_id, codigo_ucsm_coordinador)
+  VALUES (p_codigo, p_uuid, p_id, p_coordinador)
+  ON CONFLICT (codigo_ucsm, uuid) DO NOTHING;
+  UPDATE publicacion_candidata
+     SET estado = 'consolidada', actualizada_en = CURRENT_TIMESTAMP
+   WHERE id = p_id;
+END; $$;
+
+CREATE OR REPLACE PROCEDURE sp_rechazar_vinculo_candidata(
+  p_id BIGINT, p_codigo BIGINT, p_coordinador BIGINT, p_resultado VARCHAR, p_motivo TEXT)
+LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE publicacion_candidata_investigador
+     SET estado_revision = p_resultado, revisado_por = p_coordinador,
+         revisado_en = CURRENT_TIMESTAMP, motivo = p_motivo
+   WHERE publicacion_candidata_id = p_id AND codigo_ucsm = p_codigo;
+END; $$;
+
 COMMIT;
 
 BEGIN;

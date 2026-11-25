@@ -4,10 +4,9 @@ import re
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-import psycopg2
 from psycopg2.extras import Json
 
-from ..db.conexion import ErrorOperacion, _mensaje_operacion, conectar
+from ..db.conexion import ErrorOperacion, Transaccion, consultar_procedimiento
 from . import historico
 
 
@@ -361,14 +360,8 @@ def _publicacion_datos(metadata, record):
     return values
 
 
-def _coordinador_activo(cursor, codigo_ucsm):
-    cursor.execute(
-        "SELECT 1 FROM coordinador_repositorios "
-        "WHERE codigo_ucsm = %s AND fecha_retiro IS NULL",
-        (codigo_ucsm,),
-    )
-    if cursor.fetchone() is None:
-        raise ErrorOperacion("El coordinador no existe o ya fue retirado.")
+def _coordinador_activo(t, codigo_ucsm):
+    t.llamar("sp_validar_coordinador_activo", [codigo_ucsm])
 
 
 def importar_pure(records, nombre_archivo, codigo_coordinador, contenido):
@@ -388,144 +381,78 @@ def importar_pure(records, nombre_archivo, codigo_coordinador, contenido):
         "campos_opcionales_omitidos": 0,
         "lote_sha256": digest,
     }
-    conn = conectar()
-    try:
-        with conn.cursor() as cursor:
-            _coordinador_activo(cursor, codigo_coordinador)
-            source_ids = [record["id_fuente"] for record in records]
-            cursor.execute(
-                "SELECT uuid::text FROM historico WHERE uuid::text = ANY(%s)",
-                (source_ids,),
-            )
-            official_ids = {row[0] for row in cursor.fetchall()}
-            cursor.execute(
-                "SELECT id_fuente FROM publicacion_candidata "
-                "WHERE fuente = 'pure' AND id_fuente = ANY(%s)",
-                (source_ids,),
-            )
-            candidate_ids = {row[0] for row in cursor.fetchall()}
-            dois = list({
-                record["doi_normalizado"] for record in records
-                if record["doi_normalizado"]
+    with Transaccion() as t:
+        _coordinador_activo(t, codigo_coordinador)
+        source_ids = [record["id_fuente"] for record in records]
+        official_ids = {f["uuid"] for f in t.consultar(
+            "sp_pure_uuids_en_historico", [source_ids], ["text[]"])}
+        candidate_ids = {f["id_fuente"] for f in t.consultar(
+            "sp_pure_ids_candidatas", [source_ids], ["text[]"])}
+        dois = list({
+            record["doi_normalizado"] for record in records
+            if record["doi_normalizado"]
+        })
+        existing_dois = set()
+        if dois:
+            existing_dois = {f["doi"] for f in t.consultar(
+                "sp_pure_dois_existentes", [dois], ["text[]"])}
+
+        pure_people = {}
+        for f in t.consultar("sp_pure_personas", [None], ["text[]"]):
+            if f["pure_person_id"]:
+                pure_people.setdefault(f["pure_person_id"].strip(), []).append(f["codigo_ucsm"])
+
+        for record in records:
+            source_id = record["id_fuente"]
+            if source_id in official_ids:
+                resultado["ya_en_historico"] += 1
+                continue
+            if source_id in candidate_ids:
+                resultado["ya_importadas"] += 1
+                continue
+
+            metadata = dict(record["metadatos_origen"])
+            metadata["importacion"] = {
+                "archivo": Path(nombre_archivo or "pure.csv").name,
+                "sha256": digest,
+                "coordinador": codigo_coordinador,
+                "fecha": datetime.now(timezone.utc).isoformat(),
+            }
+            curation, omitted, blockers = _curacion_automatica({
+                **record, "metadatos_origen": metadata,
             })
-            existing_dois = set()
-            if dois:
-                cursor.execute(
-                    "SELECT lower(regexp_replace(regexp_replace("
-                    "btrim(e.electronic_versions), "
-                    "'^https?://(dx[.])?doi[.]org/', '', 'i'), "
-                    "'^doi:[[:space:]]*', '', 'i')) "
-                    "FROM historico_electronic_versions e "
-                    "WHERE lower(regexp_replace(regexp_replace("
-                    "btrim(e.electronic_versions), "
-                    "'^https?://(dx[.])?doi[.]org/', '', 'i'), "
-                    "'^doi:[[:space:]]*', '', 'i')) = ANY(%s) "
-                    "UNION SELECT lower(regexp_replace(regexp_replace("
-                    "btrim(c.doi_normalizado), "
-                    "'^https?://(dx[.])?doi[.]org/', '', 'i'), "
-                    "'^doi:[[:space:]]*', '', 'i')) "
-                    "FROM publicacion_candidata c "
-                    "WHERE lower(regexp_replace(regexp_replace("
-                    "btrim(c.doi_normalizado), "
-                    "'^https?://(dx[.])?doi[.]org/', '', 'i'), "
-                    "'^doi:[[:space:]]*', '', 'i')) = ANY(%s)",
-                    (dois, dois),
-                )
-                existing_dois = {row[0] for row in cursor.fetchall()}
-
-            cursor.execute(
-                "SELECT codigo_ucsm, btrim(pure_person_id) "
-                "FROM investigador WHERE pure_person_id IS NOT NULL"
-            )
-            pure_people = {}
-            for code, person_id in cursor.fetchall():
-                if person_id:
-                    pure_people.setdefault(person_id.strip(), []).append(code)
-
-            for record in records:
-                source_id = record["id_fuente"]
-                if source_id in official_ids:
-                    resultado["ya_en_historico"] += 1
-                    continue
-                if source_id in candidate_ids:
-                    resultado["ya_importadas"] += 1
-                    continue
-
-                metadata = dict(record["metadatos_origen"])
-                metadata["importacion"] = {
-                    "archivo": Path(nombre_archivo or "pure.csv").name,
-                    "sha256": digest,
-                    "coordinador": codigo_coordinador,
-                    "fecha": datetime.now(timezone.utc).isoformat(),
-                }
-                curation, omitted, blockers = _curacion_automatica({
-                    **record, "metadatos_origen": metadata,
-                })
-                metadata["curacion"] = curation
-                metadata["curacion_automatica"] = {
-                    "version": 1,
-                    "campos_omitidos": omitted,
-                    "bloqueos": blockers,
-                }
-                cursor.execute(
-                    "INSERT INTO publicacion_candidata "
-                    "(fuente, id_fuente, doi_normalizado, titulo, anio_publicacion, "
-                    "tipo, metadatos_origen) "
-                    "VALUES ('pure', %s, %s, %s, %s, %s, %s) "
-                    "ON CONFLICT (fuente, id_fuente) DO NOTHING "
-                    "RETURNING id",
-                    (
-                        source_id, record["doi_normalizado"], record["titulo"],
-                        record["anio_publicacion"], record["tipo"], Json(metadata),
-                    ),
-                )
-                inserted = cursor.fetchone()
-                if inserted is None:
-                    resultado["ya_importadas"] += 1
-                    continue
-                candidate_id = inserted[0]
-                resultado["candidatas_creadas"] += 1
-                resultado["campos_opcionales_omitidos"] += len(omitted)
-                if record["doi_normalizado"] in existing_dois:
-                    resultado["posibles_duplicados_doi"] += 1
-                for researcher_code in _investigadores_pure_exactos(
-                    record["pure_person_uuids"], pure_people
-                ):
-                    cursor.execute(
-                        "INSERT INTO publicacion_candidata_investigador "
-                        "(publicacion_candidata_id, codigo_ucsm) "
-                        "VALUES (%s, %s) ON CONFLICT DO NOTHING",
-                        (candidate_id, researcher_code),
-                    )
-                    resultado["vinculos_pure_exactos"] += cursor.rowcount
-            cursor.execute(
-                "SELECT COUNT(*) FROM publicacion_candidata "
-                "WHERE fuente = 'pure' "
-                "AND metadatos_origen #>> '{importacion,sha256}' = %s",
-                (digest,),
-            )
-            resultado["candidatas_en_lote"] = cursor.fetchone()[0]
-        conn.commit()
-        return resultado
-    except psycopg2.Error as error:
-        conn.rollback()
-        raise ErrorOperacion(_mensaje_operacion(error)) from error
-    finally:
-        conn.close()
+            metadata["curacion"] = curation
+            metadata["curacion_automatica"] = {
+                "version": 1,
+                "campos_omitidos": omitted,
+                "bloqueos": blockers,
+            }
+            inserted = t.consultar(
+                "sp_insertar_candidata_pure",
+                [source_id, record["doi_normalizado"], record["titulo"],
+                 record["anio_publicacion"], record["tipo"], Json(metadata)],
+                ["varchar", "varchar", "varchar", "int", "varchar", "jsonb"])
+            if not inserted:
+                resultado["ya_importadas"] += 1
+                continue
+            candidate_id = inserted[0]["id"]
+            resultado["candidatas_creadas"] += 1
+            resultado["campos_opcionales_omitidos"] += len(omitted)
+            if record["doi_normalizado"] in existing_dois:
+                resultado["posibles_duplicados_doi"] += 1
+            for researcher_code in _investigadores_pure_exactos(
+                record["pure_person_uuids"], pure_people
+            ):
+                resultado["vinculos_pure_exactos"] += t.consultar(
+                    "sp_vincular_candidata_investigador", [candidate_id, researcher_code]
+                )[0]["creados"]
+        resultado["candidatas_en_lote"] = t.consultar(
+            "sp_contar_candidatas_lote", [digest])[0]["total"]
+    return resultado
 
 
-def _clasificar_lote_cursor(cursor, lote_sha256, bloquear=False):
-    lock_clause = " FOR UPDATE" if bloquear else ""
-    cursor.execute(
-        "SELECT id, id_fuente, titulo, anio_publicacion, tipo, doi_normalizado, "
-        "estado, metadatos_origen FROM publicacion_candidata "
-        "WHERE fuente = 'pure' "
-        "AND metadatos_origen #>> '{importacion,sha256}' = %s "
-        "ORDER BY id" + lock_clause,
-        (lote_sha256,),
-    )
-    columns = [column[0] for column in cursor.description]
-    candidates = [dict(zip(columns, row)) for row in cursor.fetchall()]
+def _clasificar_lote_cursor(t, lote_sha256, bloquear=False):
+    candidates = t.consultar("sp_candidatas_lote", [lote_sha256, False, bloquear])
     if not candidates:
         raise ErrorOperacion("No se encontraron candidaturas para esta importación.")
 
@@ -535,57 +462,23 @@ def _clasificar_lote_cursor(cursor, lote_sha256, bloquear=False):
         candidate["doi_normalizado"].strip().lower()
         for candidate in candidates if candidate["doi_normalizado"]
     })
-    cursor.execute(
-        "SELECT publicacion_candidata_id, codigo_ucsm, estado_revision, "
-        "btrim(i.pure_person_id) AS pure_person_id "
-        "FROM publicacion_candidata_investigador r "
-        "JOIN investigador i ON i.codigo_ucsm = r.codigo_ucsm "
-        "WHERE publicacion_candidata_id = ANY(%s) "
-        "ORDER BY publicacion_candidata_id, codigo_ucsm"
-        + (" FOR UPDATE OF r, i" if bloquear else ""),
-        (candidate_ids,),
-    )
     links_by_candidate = {}
-    for candidate_id, researcher_code, link_state, pure_person_id in cursor.fetchall():
-        links_by_candidate.setdefault(candidate_id, []).append({
-            "codigo_ucsm": researcher_code,
-            "estado_revision": link_state,
-            "pure_person_id": (pure_person_id or "").strip(),
+    for f in t.consultar("sp_vinculos_candidatas", [candidate_ids, bloquear], ["bigint[]", None]):
+        links_by_candidate.setdefault(f["publicacion_candidata_id"], []).append({
+            "codigo_ucsm": f["codigo_ucsm"],
+            "estado_revision": f["estado_revision"],
+            "pure_person_id": (f["pure_person_id"] or "").strip(),
         })
 
     official_ids = set()
     if source_ids:
-        cursor.execute(
-            "SELECT uuid::text FROM historico WHERE uuid::text = ANY(%s)",
-            (source_ids,),
-        )
-        official_ids = {row[0] for row in cursor.fetchall()}
+        official_ids = {f["uuid"] for f in t.consultar(
+            "sp_pure_uuids_en_historico", [source_ids], ["text[]"])}
 
     duplicate_dois = set()
     if dois:
-        cursor.execute(
-            "SELECT doi FROM (SELECT lower(regexp_replace(regexp_replace("
-            "btrim(doi_normalizado), "
-            "'^https?://(dx[.])?doi[.]org/', '', 'i'), "
-            "'^doi:[[:space:]]*', '', 'i')) AS doi "
-            "FROM publicacion_candidata "
-            "WHERE lower(regexp_replace(regexp_replace("
-            "btrim(doi_normalizado), "
-            "'^https?://(dx[.])?doi[.]org/', '', 'i'), "
-            "'^doi:[[:space:]]*', '', 'i')) = ANY(%s)) candidates "
-            "GROUP BY doi HAVING COUNT(*) > 1 "
-            "UNION SELECT lower(regexp_replace(regexp_replace("
-            "btrim(e.electronic_versions), "
-            "'^https?://(dx[.])?doi[.]org/', '', 'i'), "
-            "'^doi:[[:space:]]*', '', 'i')) "
-            "FROM historico_electronic_versions e "
-            "WHERE lower(regexp_replace(regexp_replace("
-            "btrim(e.electronic_versions), "
-            "'^https?://(dx[.])?doi[.]org/', '', 'i'), "
-            "'^doi:[[:space:]]*', '', 'i')) = ANY(%s)",
-            (dois, dois),
-        )
-        duplicate_dois = {row[0] for row in cursor.fetchall()}
+        duplicate_dois = {f["doi"] for f in t.consultar(
+            "sp_pure_dois_duplicados", [dois], ["text[]"])}
 
     eligible = []
     manual = []
@@ -640,57 +533,27 @@ def _clasificar_lote_cursor(cursor, lote_sha256, bloquear=False):
 
 
 def resumen_lote_pure(lote_sha256):
-    conn = conectar()
-    try:
-        with conn.cursor() as cursor:
-            result = _clasificar_lote_cursor(cursor, lote_sha256)
-            result.pop("_aptas", None)
-            return result
-    except psycopg2.Error as error:
-        raise ErrorOperacion(_mensaje_operacion(error)) from error
-    finally:
-        conn.close()
+    with Transaccion() as t:
+        result = _clasificar_lote_cursor(t, lote_sha256)
+    result.pop("_aptas", None)
+    return result
 
 
 def listar(filtro="", limite=50, desplazamiento=0):
     filtro = (filtro or "").strip()
-    patron = f"%{filtro}%"
-    condicion = (
-        "fuente = 'pure' AND estado <> 'descartada' "
-        "AND (%s = '' OR titulo ILIKE %s OR id_fuente ILIKE %s "
-        "OR COALESCE(doi_normalizado, '') ILIKE %s)"
-    )
-    filas = _consultar(
-        f"""
-        SELECT id, id_fuente, titulo, anio_publicacion, tipo, doi_normalizado,
-               estado, creada_en,
-               (SELECT COUNT(*) FROM publicacion_candidata_investigador x
-                 WHERE x.publicacion_candidata_id = c.id
-                   AND x.estado_revision = 'pendiente') AS pendientes,
-               (SELECT COUNT(*) FROM publicacion_candidata_investigador x
-                 WHERE x.publicacion_candidata_id = c.id
-                   AND x.estado_revision = 'aceptada') AS aceptadas
-          FROM publicacion_candidata c
-         WHERE {condicion}
-         ORDER BY CASE estado WHEN 'pendiente' THEN 0 ELSE 1 END, creada_en DESC, id
-         LIMIT %s OFFSET %s
-        """,
-        (filtro, patron, patron, patron, limite, desplazamiento),
-    )
-    total = _consultar(
-        f"SELECT COUNT(*) AS total FROM publicacion_candidata WHERE {condicion}",
-        (filtro, patron, patron, patron),
-    )[0]["total"]
+    filas = consultar_procedimiento(
+        "sp_listar_candidatas", [filtro, limite, desplazamiento])
+    if filas:
+        total = filas[0]["total"]
+    else:
+        total = consultar_procedimiento("sp_contar_candidatas", [filtro])[0]["total"]
+    for fila in filas:
+        del fila["total"]
     return {"items": filas, "total": total, "limite": limite, "desplazamiento": desplazamiento}
 
 
 def obtener(candidata_id):
-    filas = _consultar(
-        "SELECT id, id_fuente, titulo, anio_publicacion, tipo, doi_normalizado, "
-        "estado, creada_en, metadatos_origen "
-        "FROM publicacion_candidata WHERE id = %s AND fuente = 'pure'",
-        (candidata_id,),
-    )
+    filas = consultar_procedimiento("sp_obtener_candidata", [candidata_id, False])
     if not filas:
         return None
     record = filas[0]
@@ -698,19 +561,8 @@ def obtener(candidata_id):
         **_curation_default(record),
         **(record["metadatos_origen"].get("curacion") or {}),
     }
-    record["investigadores"] = _consultar(
-        """
-        SELECT r.codigo_ucsm,
-               p.apellido_paterno || ' ' || p.apellido_materno || ', ' || p.nombres AS nombre,
-               r.estado_revision, r.motivo, i.pure_person_id
-          FROM publicacion_candidata_investigador r
-          JOIN investigador i ON i.codigo_ucsm = r.codigo_ucsm
-          JOIN persona p ON p.dni = i.dni
-         WHERE r.publicacion_candidata_id = %s
-         ORDER BY nombre
-        """,
-        (candidata_id,),
-    )
+    record["investigadores"] = consultar_procedimiento(
+        "sp_investigadores_candidata", [candidata_id])
     pure_person_uuids = {
         str(contributor.get("person", {}).get("uuid", "")).strip()
         for contributor in record["metadatos_origen"]["data"].get("contributors") or []
@@ -722,299 +574,136 @@ def obtener(candidata_id):
         researcher["coincidencia_pure_exacta"] = bool(
             pure_person_id and pure_person_id in pure_person_uuids)
     doi = record["doi_normalizado"]
-    record["posible_duplicado_doi"] = bool(doi and _consultar(
-        """
-        SELECT EXISTS (
-          SELECT 1 FROM historico_electronic_versions
-           WHERE lower(regexp_replace(regexp_replace(
-             btrim(electronic_versions),
-             '^https?://(dx[.])?doi[.]org/', '', 'i'),
-             '^doi:[[:space:]]*', '', 'i')) = %s
-          UNION ALL
-          SELECT 1 FROM publicacion_candidata
-           WHERE id <> %s AND lower(regexp_replace(regexp_replace(
-             btrim(doi_normalizado),
-             '^https?://(dx[.])?doi[.]org/', '', 'i'),
-             '^doi:[[:space:]]*', '', 'i')) = %s
-        ) AS existe
-        """,
-        (doi, candidata_id, doi),
-    )[0]["existe"])
+    record["posible_duplicado_doi"] = bool(doi and consultar_procedimiento(
+        "sp_doi_duplicado_candidata", [doi, candidata_id])[0]["existe"])
     return record
 
 
+def _candidata_bloqueada(t, candidata_id):
+    filas = t.consultar("sp_obtener_candidata", [candidata_id, True])
+    if not filas:
+        raise ErrorOperacion("No se encontró la candidatura de Pure.")
+    return filas[0]
+
+
 def guardar_curacion(candidata_id, datos, codigo_coordinador):
-    conn = conectar()
-    try:
-        with conn.cursor() as cursor:
-            _coordinador_activo(cursor, codigo_coordinador)
-            cursor.execute(
-                "SELECT estado, metadatos_origen FROM publicacion_candidata "
-                "WHERE id = %s AND fuente = 'pure' FOR UPDATE",
-                (candidata_id,),
-            )
-            row = cursor.fetchone()
-            if row is None:
-                raise ErrorOperacion("No se encontró la candidatura de Pure.")
-            if row[0] != "pendiente":
-                raise ErrorOperacion("Solo se pueden depurar candidaturas pendientes.")
-            metadata = row[1]
-            metadata["curacion"] = datos
-            lote_sha256 = (metadata.get("importacion") or {}).get("sha256")
-            cursor.execute(
-                "UPDATE publicacion_candidata "
-                "SET titulo = %s, anio_publicacion = %s, tipo = %s, "
-                "metadatos_origen = %s, actualizada_en = CURRENT_TIMESTAMP "
-                "WHERE id = %s",
-                (
-                    datos["title"], datos["publication_year"], datos["type"],
-                    Json(metadata), candidata_id,
-                ),
-            )
-        conn.commit()
-        return lote_sha256
-    except psycopg2.Error as error:
-        conn.rollback()
-        raise ErrorOperacion(_mensaje_operacion(error)) from error
-    finally:
-        conn.close()
+    with Transaccion() as t:
+        _coordinador_activo(t, codigo_coordinador)
+        candidata = _candidata_bloqueada(t, candidata_id)
+        if candidata["estado"] != "pendiente":
+            raise ErrorOperacion("Solo se pueden depurar candidaturas pendientes.")
+        metadata = candidata["metadatos_origen"]
+        metadata["curacion"] = datos
+        lote_sha256 = (metadata.get("importacion") or {}).get("sha256")
+        t.llamar("sp_guardar_curacion_candidata",
+                 [candidata_id, datos["title"], datos["publication_year"], datos["type"],
+                  Json(metadata)],
+                 [None, None, "int", None, "jsonb"])
+    return lote_sha256
 
 
 def descartar(candidata_id, codigo_coordinador, motivo):
-    conn = conectar()
-    try:
-        with conn.cursor() as cursor:
-            _coordinador_activo(cursor, codigo_coordinador)
-            cursor.execute(
-                "SELECT estado, metadatos_origen FROM publicacion_candidata "
-                "WHERE id = %s AND fuente = 'pure' FOR UPDATE",
-                (candidata_id,),
-            )
-            row = cursor.fetchone()
-            if row is None:
-                raise ErrorOperacion("No se encontró la candidatura de Pure.")
-            if row[0] != "pendiente":
-                raise ErrorOperacion(
-                    "Solo se pueden descartar candidaturas pendientes.")
-            metadata = row[1]
-            metadata["descarte"] = {
-                "motivo": motivo.strip(),
-                "coordinador": codigo_coordinador,
-                "fecha": datetime.now(timezone.utc).isoformat(),
-            }
-            cursor.execute(
-                "UPDATE publicacion_candidata "
-                "SET estado = 'descartada', metadatos_origen = %s, "
-                "actualizada_en = CURRENT_TIMESTAMP WHERE id = %s",
-                (Json(metadata), candidata_id),
-            )
-        conn.commit()
-    except psycopg2.Error as error:
-        conn.rollback()
-        raise ErrorOperacion(_mensaje_operacion(error)) from error
-    finally:
-        conn.close()
+    with Transaccion() as t:
+        _coordinador_activo(t, codigo_coordinador)
+        candidata = _candidata_bloqueada(t, candidata_id)
+        if candidata["estado"] != "pendiente":
+            raise ErrorOperacion("Solo se pueden descartar candidaturas pendientes.")
+        metadata = candidata["metadatos_origen"]
+        metadata["descarte"] = {
+            "motivo": motivo.strip(),
+            "coordinador": codigo_coordinador,
+            "fecha": datetime.now(timezone.utc).isoformat(),
+        }
+        t.llamar("sp_descartar_candidata", [candidata_id, Json(metadata)], [None, "jsonb"])
 
 
 def vincular_investigador(candidata_id, codigo_ucsm, codigo_coordinador):
-    conn = conectar()
-    try:
-        with conn.cursor() as cursor:
-            _coordinador_activo(cursor, codigo_coordinador)
-            cursor.execute(
-                "SELECT estado FROM publicacion_candidata "
-                "WHERE id = %s AND fuente = 'pure' FOR UPDATE",
-                (candidata_id,),
-            )
-            candidate = cursor.fetchone()
-            if candidate is None:
-                raise ErrorOperacion("No se encontró la candidatura de Pure.")
-            if candidate[0] == "descartada":
-                raise ErrorOperacion("La candidatura fue descartada.")
-            cursor.execute(
-                "INSERT INTO publicacion_candidata_investigador "
-                "(publicacion_candidata_id, codigo_ucsm) "
-                "VALUES (%s, %s) ON CONFLICT DO NOTHING",
-                (candidata_id, codigo_ucsm),
-            )
-            if cursor.rowcount == 0:
-                raise ErrorOperacion("El investigador ya está vinculado a esta candidatura.")
-        conn.commit()
-    except psycopg2.Error as error:
-        conn.rollback()
-        raise ErrorOperacion(_mensaje_operacion(error)) from error
-    finally:
-        conn.close()
+    with Transaccion() as t:
+        _coordinador_activo(t, codigo_coordinador)
+        candidata = _candidata_bloqueada(t, candidata_id)
+        if candidata["estado"] == "descartada":
+            raise ErrorOperacion("La candidatura fue descartada.")
+        creados = t.consultar("sp_vincular_candidata_investigador",
+                              [candidata_id, codigo_ucsm])[0]["creados"]
+        if creados == 0:
+            raise ErrorOperacion("El investigador ya está vinculado a esta candidatura.")
 
 
 def _resolver_vinculo_cursor(
-    cursor, candidata_id, codigo_ucsm, codigo_coordinador, resultado, motivo=None
+    t, candidata_id, codigo_ucsm, codigo_coordinador, resultado, motivo=None
 ):
-    cursor.execute(
-        "SELECT id_fuente, titulo, anio_publicacion, tipo, estado, metadatos_origen "
-        "FROM publicacion_candidata "
-        "WHERE id = %s AND fuente = 'pure' FOR UPDATE",
-        (candidata_id,),
-    )
-    row = cursor.fetchone()
-    if row is None:
-        raise ErrorOperacion("No se encontró la candidatura de Pure.")
-    source_id, title, year, publication_type, candidate_state, metadata = row
-    if candidate_state == "descartada":
+    candidata = _candidata_bloqueada(t, candidata_id)
+    if candidata["estado"] == "descartada":
         raise ErrorOperacion("La candidatura fue descartada.")
-    cursor.execute(
-        "SELECT estado_revision FROM publicacion_candidata_investigador "
-        "WHERE publicacion_candidata_id = %s AND codigo_ucsm = %s FOR UPDATE",
-        (candidata_id, codigo_ucsm),
-    )
-    association = cursor.fetchone()
-    if association is None:
+    vinculo = t.consultar("sp_bloquear_vinculo_candidata", [candidata_id, codigo_ucsm])
+    if not vinculo:
         raise ErrorOperacion("Vincule primero al investigador con la candidatura.")
-    if association[0] != "pendiente":
+    if vinculo[0]["estado_revision"] != "pendiente":
         raise ErrorOperacion("Este vínculo ya fue revisado.")
 
+    source_id = candidata["id_fuente"]
     if resultado == "aceptada":
+        metadata = candidata["metadatos_origen"]
         record = {
-            "titulo": title,
-            "anio_publicacion": year,
-            "tipo": publication_type,
+            "titulo": candidata["titulo"],
+            "anio_publicacion": candidata["anio_publicacion"],
+            "tipo": candidata["tipo"],
             "metadatos_origen": metadata,
         }
         data = _publicacion_datos(metadata, record)
-        cursor.execute(
-            "SELECT 1 FROM historico WHERE uuid = %s::uuid",
-            (source_id,),
-        )
-        if cursor.fetchone() is None:
+        existe = t.consultar("sp_existe_historico", [source_id], ["uuid"])[0]["existe"]
+        if not existe:
             params, types = historico.parametros_importacion(
                 data, codigo_coordinador, source_id)
-            marks = ", ".join(
-                "%s" + ("::" + sql_type if sql_type else "")
-                for sql_type in types
-            )
-            cursor.execute(
-                f"CALL sp_cargar_historico({marks})",
-                params,
-            )
-        cursor.execute(
-            "UPDATE publicacion_candidata_investigador "
-            "SET estado_revision = 'aceptada', revisado_por = %s, "
-            "revisado_en = CURRENT_TIMESTAMP, motivo = NULL "
-            "WHERE publicacion_candidata_id = %s AND codigo_ucsm = %s",
-            (codigo_coordinador, candidata_id, codigo_ucsm),
-        )
-        cursor.execute(
-            "INSERT INTO investigador_historico "
-            "(codigo_ucsm, uuid, publicacion_candidata_id, codigo_ucsm_coordinador) "
-            "VALUES (%s, %s::uuid, %s, %s) "
-            "ON CONFLICT (codigo_ucsm, uuid) DO NOTHING",
-            (codigo_ucsm, source_id, candidata_id, codigo_coordinador),
-        )
-        cursor.execute(
-            "UPDATE publicacion_candidata SET estado = 'consolidada', "
-            "actualizada_en = CURRENT_TIMESTAMP WHERE id = %s",
-            (candidata_id,),
-        )
+            t.llamar("sp_cargar_historico", params, types)
+        t.llamar("sp_aceptar_vinculo_candidata",
+                 [candidata_id, codigo_ucsm, codigo_coordinador, source_id],
+                 [None, None, None, "uuid"])
     else:
-        cursor.execute(
-            "UPDATE publicacion_candidata_investigador "
-            "SET estado_revision = %s, revisado_por = %s, "
-            "revisado_en = CURRENT_TIMESTAMP, motivo = %s "
-            "WHERE publicacion_candidata_id = %s AND codigo_ucsm = %s",
-            (resultado, codigo_coordinador, motivo, candidata_id, codigo_ucsm),
-        )
+        t.llamar("sp_rechazar_vinculo_candidata",
+                 [candidata_id, codigo_ucsm, codigo_coordinador, resultado, motivo],
+                 [None, None, None, None, "text"])
 
 
 def resolver_vinculo(candidata_id, codigo_ucsm, codigo_coordinador, resultado, motivo=None):
-    conn = conectar()
-    try:
-        with conn.cursor() as cursor:
-            _coordinador_activo(cursor, codigo_coordinador)
-            _resolver_vinculo_cursor(
-                cursor, candidata_id, codigo_ucsm, codigo_coordinador,
-                resultado, motivo)
-        conn.commit()
-    except psycopg2.Error as error:
-        conn.rollback()
-        raise ErrorOperacion(_mensaje_operacion(error)) from error
-    finally:
-        conn.close()
+    with Transaccion() as t:
+        _coordinador_activo(t, codigo_coordinador)
+        _resolver_vinculo_cursor(
+            t, candidata_id, codigo_ucsm, codigo_coordinador, resultado, motivo)
 
 
 def aprobar_lote_pure(lote_sha256, codigo_coordinador):
     if not re.fullmatch(r"[a-f0-9]{64}", lote_sha256 or ""):
         raise ErrorOperacion("El identificador del lote no es válido.")
-    conn = conectar()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
-            _coordinador_activo(cursor, codigo_coordinador)
-            cursor.execute(
-                "SELECT id, metadatos_origen FROM publicacion_candidata "
-                "WHERE fuente = 'pure' AND estado = 'pendiente' "
-                "AND metadatos_origen #>> '{importacion,sha256}' = %s "
-                "ORDER BY id FOR UPDATE",
-                (lote_sha256,),
-            )
-            candidates = cursor.fetchall()
-            person_uuids = set()
-            for _candidate_id, metadata in candidates:
-                person_uuids.update(_autor_uuid_pure(metadata))
-            pure_people = {}
-            if person_uuids:
-                cursor.execute(
-                    "SELECT btrim(pure_person_id), codigo_ucsm "
-                    "FROM investigador WHERE pure_person_id IS NOT NULL "
-                    "AND btrim(pure_person_id) <> '' "
-                    "AND btrim(pure_person_id) = ANY(%s)",
-                    (list(person_uuids),),
-                )
-                for person_uuid, researcher_code in cursor.fetchall():
-                    pure_people.setdefault(person_uuid, []).append(researcher_code)
-                for candidate_id, metadata in candidates:
-                    for researcher_code in _investigadores_pure_exactos(
-                        _autor_uuid_pure(metadata), pure_people
-                    ):
-                        cursor.execute(
-                            "INSERT INTO publicacion_candidata_investigador "
-                            "(publicacion_candidata_id, codigo_ucsm) "
-                            "VALUES (%s, %s) ON CONFLICT DO NOTHING",
-                            (candidate_id, researcher_code),
-                        )
-            batch = _clasificar_lote_cursor(cursor, lote_sha256, bloquear=True)
-            for candidate in batch["_aptas"]:
-                for researcher_code in candidate["vinculos_exactos"]:
-                    _resolver_vinculo_cursor(
-                        cursor, candidate["id"], researcher_code,
-                        codigo_coordinador, "aceptada")
-        conn.commit()
-        return {
-            "lote_sha256": lote_sha256,
-            "publicaciones_consolidadas": batch["aptas"],
-            "vinculos_aprobados": sum(
-                len(candidate["vinculos_exactos"])
-                for candidate in batch["_aptas"]
-            ),
-            "revision_manual": batch["revision_manual"],
-        }
-    except psycopg2.Error as error:
-        conn.rollback()
-        raise ErrorOperacion(_mensaje_operacion(error)) from error
-    except ErrorOperacion:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
-def _consultar(sql, parametros):
-    conn = conectar()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(sql, parametros)
-            columns = [column[0] for column in cursor.description]
-            return [dict(zip(columns, row)) for row in cursor.fetchall()]
-    except psycopg2.Error as error:
-        raise ErrorOperacion(_mensaje_operacion(error)) from error
-    finally:
-        conn.close()
+    with Transaccion(serializable=True) as t:
+        _coordinador_activo(t, codigo_coordinador)
+        candidates = [(f["id"], f["metadatos_origen"]) for f in t.consultar(
+            "sp_candidatas_lote", [lote_sha256, True, True])]
+        person_uuids = set()
+        for _candidate_id, metadata in candidates:
+            person_uuids.update(_autor_uuid_pure(metadata))
+        pure_people = {}
+        if person_uuids:
+            for f in t.consultar("sp_pure_personas", [list(person_uuids)], ["text[]"]):
+                pure_people.setdefault(f["pure_person_id"], []).append(f["codigo_ucsm"])
+            for candidate_id, metadata in candidates:
+                for researcher_code in _investigadores_pure_exactos(
+                    _autor_uuid_pure(metadata), pure_people
+                ):
+                    t.consultar("sp_vincular_candidata_investigador",
+                                [candidate_id, researcher_code])
+        batch = _clasificar_lote_cursor(t, lote_sha256, bloquear=True)
+        for candidate in batch["_aptas"]:
+            for researcher_code in candidate["vinculos_exactos"]:
+                _resolver_vinculo_cursor(
+                    t, candidate["id"], researcher_code,
+                    codigo_coordinador, "aceptada")
+    return {
+        "lote_sha256": lote_sha256,
+        "publicaciones_consolidadas": batch["aptas"],
+        "vinculos_aprobados": sum(
+            len(candidate["vinculos_exactos"])
+            for candidate in batch["_aptas"]
+        ),
+        "revision_manual": batch["revision_manual"],
+    }
