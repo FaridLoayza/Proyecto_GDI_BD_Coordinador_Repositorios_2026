@@ -1,0 +1,28 @@
+# Base de datos del Gestor de Investigación en Docker (PostgreSQL 16).
+# El instalador crea el archivo .env de esta carpeta con una contraseña
+# aleatoria (POSTGRES_PASSWORD). El puerto 5433 evita chocar con un
+# PostgreSQL ya instalado en el equipo (que suele usar el 5432).
+# Solo escucha en 127.0.0.1: la base no es accesible desde otras computadoras.
+name: gestor-investigacion
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: gestor-investigacion-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Falta POSTGRES_PASSWORD en .env}
+      POSTGRES_DB: postgres
+    ports:
+      - "127.0.0.1:${DB_PORT:-5433}:5432"
+    volumes:
+      - datos_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  datos_postgres:

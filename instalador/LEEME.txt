@@ -1,0 +1,42 @@
+GESTOR DE INVESTIGACIÓN - Instalación con el instalador (Docker)
+
+QUÉ HACE EL INSTALADOR
+  1. Copia el programa en %LOCALAPPDATA%\Programs\GestorInvestigacion
+     (no necesita permisos de administrador).
+  2. Revisa si Docker Desktop está instalado. Si falta, lo descarga del sitio
+     oficial e instala WSL2 y Docker Desktop. Windows pedirá permisos de
+     administrador y será necesario REINICIAR el equipo; al volver a iniciar
+     sesión, la preparación continúa sola.
+  3. Genera una contraseña aleatoria para PostgreSQL, crea config.ini y .env
+     (solo accesibles para su usuario de Windows) y enciende PostgreSQL 16 en
+     Docker, escuchando solo en esta computadora (127.0.0.1, puerto 5433).
+  4. Crea la base de datos con sus tablas y datos de prueba.
+
+PRIMER INICIO
+  Al abrir el Gestor de Investigación por primera vez aparece la configuración
+  inicial en el navegador:
+    Paso 1. Cambie la contraseña aleatoria de la base de datos por una propia.
+    Paso 2. Escriba los datos de su aplicación de ORCID:
+            - Entorno: Sandbox (sandbox.orcid.org) o Producción (orcid.org).
+            - Client ID: en ORCID > su nombre > Developer tools. Empieza con APP-.
+            - Client secret: en la misma página, "Show details".
+            - URI de redirección: debe estar registrada en Developer tools:
+              http://127.0.0.1:8000/api/auth/orcid/callback
+            Este paso se puede omitir y completar después en config.ini.
+    Paso 3. Ir al portal.
+
+REQUISITOS
+  - Windows 10 u 11 de 64 bits con la virtualización activada en la BIOS/UEFI
+    (necesaria para WSL2 y Docker).
+  - Conexión a Internet durante la instalación (descarga de Docker y de la
+    imagen de PostgreSQL).
+
+PROBLEMAS FRECUENTES
+  - "Docker Desktop no respondió": abra Docker Desktop desde el menú Inicio,
+    acepte sus términos de uso y ejecute "Preparar Gestor de Investigación"
+    desde el menú Inicio.
+  - Si la virtualización está desactivada, Docker no podrá iniciar: actívela en
+    la configuración de la BIOS/UEFI del equipo.
+
+Cuentas de prueba: CREDENCIALES_PRUEBA.txt
+Reporte COUNTER de ejemplo para Histórico > Importar datos: ejemplos\
