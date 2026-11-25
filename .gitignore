@@ -33,3 +33,7 @@ htmlcov/
 *.log
 .DS_Store
 Thumbs.db
+
+# Instalador de Windows
+dist-instalador/
+instalador/.env

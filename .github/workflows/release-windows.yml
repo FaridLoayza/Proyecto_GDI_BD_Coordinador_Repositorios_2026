@@ -45,7 +45,7 @@ jobs:
           python -m pip install -r backend/requirements.txt pyinstaller
 
       - name: Pruebas del portal
-        run: python -m unittest backend.pruebas.prueba_portal_web
+        run: python -m unittest backend.pruebas.prueba_portal_web backend.pruebas.prueba_uso_suscripciones backend.pruebas.prueba_asistente
 
       - name: Generar GestorInvestigacion.exe
         run: >
@@ -82,15 +82,34 @@ jobs:
           Compress-Archive -Path $carpeta -DestinationPath "$carpeta.zip"
           "ZIP=$carpeta.zip" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
 
+      - name: Generar instalador (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.TrimStart('v') } else { "0.0.0-dev" }
+          $origen = Join-Path $PWD 'dist-instalador'
+          New-Item -ItemType Directory -Path $origen -Force | Out-Null
+          Copy-Item dist/GestorInvestigacion.exe, backend/config.ini.example, instalador/docker-compose.yml, instalador/preparar.ps1, instalador/LEEME.txt $origen/
+          Copy-Item CREDENCIALES_PRUEBA.md "$origen/CREDENCIALES_PRUEBA.txt"
+          Copy-Item backend/database/ejemplos/reporte_counter5_PR_2026_ejemplo.json $origen/
+          & $iscc "/DVersion=$version" "/DOrigen=$origen" instalador/GestorInvestigacion.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup no pudo generar el instalador.' }
+          "SETUP=dist/GestorInvestigacion-Setup-v$version.exe" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
       - name: Artefacto
         uses: actions/upload-artifact@v4
         with:
           name: GestorInvestigacion-windows
-          path: ${{ env.ZIP }}
+          path: |
+            ${{ env.ZIP }}
+            ${{ env.SETUP }}
 
       - name: Publicar release
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.ZIP }}
+          files: |
+            ${{ env.ZIP }}
+            ${{ env.SETUP }}
           generate_release_notes: true

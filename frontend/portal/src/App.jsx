@@ -1847,8 +1847,98 @@ function AdminPanel() {
   )
 }
 
+// --- Asistente de primer inicio (después del instalador de Windows) ---------
+// Mientras config.ini diga [portal] configuracion_inicial = pendiente, todas
+// las rutas llevan aquí. Paso 1: contraseña de la base. Paso 2: ORCID.
+function SetupGate({ children }) {
+  const location = useLocation()
+  const [pendiente, setPendiente] = useState(null)
+  useEffect(() => {
+    sendRequest('/api/setup/status').then((data) => setPendiente(Boolean(data.pendiente))).catch(() => setPendiente(false))
+  }, [location.pathname])
+  if (pendiente === null) return <div className="loading">Cargando portal…</div>
+  if (pendiente && location.pathname !== '/configuracion-inicial') return <Navigate to="/configuracion-inicial" replace />
+  if (!pendiente && location.pathname === '/configuracion-inicial') return <Navigate to="/" replace />
+  return children
+}
+
+function SetupHelp({ children }) {
+  return <small className="setup-help">{children}</small>
+}
+
+function SetupWizard() {
+  const { csrf } = useAuth()
+  const navigate = useNavigate()
+  const [estado, setEstado] = useState(null)
+  const [paso, setPaso] = useState(1)
+  const [clave, setClave] = useState({ nueva_clave: '', confirmacion: '' })
+  const [orcidForm, setOrcidForm] = useState({ client_id: '', client_secret: '', environment: 'sandbox', redirect_uri: '' })
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    sendRequest('/api/setup/status').then((data) => {
+      setEstado(data)
+      setPaso(data.paso_base_datos ? 2 : 1)
+      setOrcidForm((actual) => ({ ...actual, redirect_uri: data.redirect_uri_sugerida || '' }))
+    }).catch((problem) => setError(problem.message))
+  }, [])
+  async function enviar(ruta, body, siguiente) {
+    setBusy(true); setError('')
+    try { await sendRequest(ruta, { method: 'POST', body, csrf }); siguiente() } catch (problem) { setError(problem.message) } finally { setBusy(false) }
+  }
+  if (!estado) return <div className="loading">Cargando configuración inicial…</div>
+  const pasos = ['Base de datos', 'ORCID', 'Listo']
+  return (
+    <section className="panel setup-panel">
+      <p className="eyebrow">Configuración inicial</p>
+      <h1>Bienvenido al Gestor de Investigación</h1>
+      <p className="muted">Antes del primer uso, complete estos pasos. Solo se piden una vez y se guardan en el archivo config.ini de esta computadora.</p>
+      <ol className="setup-steps">{pasos.map((nombre, i) => <li key={nombre} className={paso === i + 1 ? 'active' : paso > i + 1 ? 'done' : ''}><span>{i + 1}</span>{nombre}</li>)}</ol>
+      {error && <Alert kind="error">{error}</Alert>}
+
+      {paso === 1 && <form className="form-grid" onSubmit={(event) => { event.preventDefault(); enviar('/api/setup/database', clave, () => setPaso(2)) }}>
+        <h2 className="form-section-title">Paso 1. Contraseña de la base de datos</h2>
+        <p className="field-span muted">El instalador creó la base de datos con una contraseña aleatoria. Cámbiela por una que usted conozca: se actualizará en PostgreSQL y en config.ini.</p>
+        <PasswordField label="Nueva contraseña" name="nueva_clave" value={clave.nueva_clave} onChange={(v) => setClave({ ...clave, nueva_clave: v })} required autoComplete="new-password" help="Mínimo 12 caracteres. Sin comillas simples (') ni barras invertidas (\). Guárdela en un lugar seguro: la necesitará para entrar a pgAdmin o psql." />
+        <PasswordField label="Confirmar contraseña" name="confirmacion" value={clave.confirmacion} onChange={(v) => setClave({ ...clave, confirmacion: v })} required autoComplete="new-password" help="Escriba la misma contraseña otra vez." />
+        <div className="form-actions field-span"><button className="button button-primary" disabled={busy || clave.nueva_clave.length < 12}>{busy ? 'Guardando…' : 'Guardar y continuar'}</button></div>
+      </form>}
+
+      {paso === 2 && <form className="form-grid" onSubmit={(event) => { event.preventDefault(); enviar('/api/setup/orcid', orcidForm, () => setPaso(3)) }}>
+        <h2 className="form-section-title">Paso 2. Inicio de sesión con ORCID</h2>
+        <p className="field-span muted">Los investigadores confirman su ORCID iniciando sesión en orcid.org. Para eso, el portal necesita los datos de su aplicación registrada en ORCID. Entre a <strong>sandbox.orcid.org</strong> (pruebas) u <strong>orcid.org</strong> (oficial), abra su nombre → <strong>Developer tools</strong> y copie los datos de allí.</p>
+        <label className="field"><span>Entorno de ORCID<b className="required"> *</b></span>
+          <select value={orcidForm.environment} onChange={(event) => setOrcidForm({ ...orcidForm, environment: event.target.value })}>
+            <option value="sandbox">Sandbox (pruebas) — sandbox.orcid.org</option>
+            <option value="production">Producción (oficial) — orcid.org</option>
+          </select>
+          <SetupHelp>Elija el sitio donde registró la aplicación. Para el curso normalmente es Sandbox.</SetupHelp>
+        </label>
+        <TextField label="Client ID" name="client_id" value={orcidForm.client_id} onChange={(v) => setOrcidForm({ ...orcidForm, client_id: v.trim() })} required help="Aparece en Developer tools como «Client ID». Empieza con APP- (por ejemplo APP-ABCD1234EFGH5678)." />
+        <PasswordField label="Client secret" name="client_secret" value={orcidForm.client_secret} onChange={(v) => setOrcidForm({ ...orcidForm, client_secret: v.trim() })} required autoComplete="off" help="En Developer tools, junto al Client ID, pulse «Show details» y copie el «Client secret». No lo comparta con nadie." />
+        <label className="field field-span"><span>URI de redirección<b className="required"> *</b></span>
+          <input value={orcidForm.redirect_uri} onChange={(event) => setOrcidForm({ ...orcidForm, redirect_uri: event.target.value.trim() })} />
+          <SetupHelp>Debe ser exactamente igual a una de las «Redirect URIs» registradas en Developer tools. Para usar el portal en esta computadora, registre en ORCID: <code>{estado.redirect_uri_sugerida}</code></SetupHelp>
+        </label>
+        <p className="field-span muted">Al continuar, el portal comprueba los datos con ORCID. Si aún no tiene la aplicación registrada, puede omitir este paso y completarlo después en config.ini (sección [orcid]).</p>
+        <div className="form-actions field-span">
+          <button className="button button-primary" disabled={busy || !orcidForm.client_id || !orcidForm.client_secret}>{busy ? 'Comprobando con ORCID…' : 'Comprobar y guardar'}</button>
+          <button type="button" className="button button-quiet" disabled={busy} onClick={() => enviar('/api/setup/orcid', { omitir: true }, () => setPaso(3))}>Omitir por ahora</button>
+        </div>
+      </form>}
+
+      {paso === 3 && <div className="form-grid">
+        <h2 className="form-section-title">Paso 3. Todo listo</h2>
+        <p className="field-span">La configuración quedó guardada. Ya puede usar el portal con las cuentas de prueba o crear las suyas.</p>
+        <div className="form-actions field-span"><button type="button" className="button button-primary" disabled={busy} onClick={() => enviar('/api/setup/finish', {}, () => navigate('/', { replace: true }))}>{busy ? 'Finalizando…' : 'Ir al portal'}</button></div>
+      </div>}
+    </section>
+  )
+}
+
 function RouterApp() {
-  return <AuthProvider><BrowserRouter><AppFrame><Routes>
+  return <AuthProvider><BrowserRouter><AppFrame><SetupGate><Routes>
+    <Route path="/configuracion-inicial" element={<SetupWizard />} />
     <Route path="/" element={<Home />} />
     <Route path="/login/:role" element={<LoginPage />} />
     <Route path="/register" element={<RegisterPage />} />
@@ -1870,7 +1960,7 @@ function RouterApp() {
       <Route path="/admin" element={<AdminPanel />} />
     </Route>
     <Route path="*" element={<Navigate to="/" replace />} />
-  </Routes></AppFrame></BrowserRouter></AuthProvider>
+  </Routes></SetupGate></AppFrame></BrowserRouter></AuthProvider>
 }
 
 export default function App() {

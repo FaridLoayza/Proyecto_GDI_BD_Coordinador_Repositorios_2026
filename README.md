@@ -181,6 +181,25 @@ GestorInvestigacion.exe --instalar-bd
 crea la base con el esquema y los datos de prueba, y `GestorInvestigacion.exe --crear-admin`
 crea una cuenta de administrador.
 
+## Instalador de Windows (Docker)
+
+Desde la v1.4.0 cada release incluye también `GestorInvestigacion-Setup-vX.Y.Z.exe`
+(carpeta `instalador/`, hecho con Inno Setup):
+
+1. Instala el programa para el usuario actual en `%LOCALAPPDATA%\Programs\GestorInvestigacion`.
+2. Si falta Docker Desktop, instala WSL2 y Docker Desktop (pide permisos de administrador)
+   y avisa que hay que **reiniciar el equipo**; tras el reinicio la preparación continúa sola.
+3. Genera una contraseña aleatoria para PostgreSQL, crea `config.ini` y `.env` (solo para el
+   usuario actual) y levanta PostgreSQL 16 en Docker (`instalador/docker-compose.yml`, puerto
+   5433, solo en 127.0.0.1). Luego instala la base con `--instalar-bd`.
+4. Al abrir el portal por primera vez aparece el **asistente de configuración inicial**
+   (`/configuracion-inicial`): cambiar la contraseña de la base y registrar el Client ID,
+   el Client secret, el entorno y la URI de redirección de ORCID (o saltar ese paso).
+   El asistente solo funciona desde la misma computadora y una sola vez.
+
+Cada vez que se abre `GestorInvestigacion.exe`, si la instalación usa Docker, enciende
+Docker Desktop y el contenedor de la base antes de iniciar el portal.
+
 ## Pruebas
 
 Para comprobar la conexión a PostgreSQL:
@@ -194,6 +213,7 @@ Las pruebas del portal y del instalador pueden ejecutarse así:
 ```cmd
 python -m unittest backend.pruebas.prueba_portal_web
 python -m unittest backend.pruebas.prueba_uso_suscripciones
+python -m unittest backend.pruebas.prueba_asistente
 python backend\pruebas\prueba_instalador_bd.py
 ```
 

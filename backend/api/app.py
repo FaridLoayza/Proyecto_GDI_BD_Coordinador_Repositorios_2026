@@ -31,7 +31,7 @@ from ..src.repositorios import (
 )
 from ..src.repositorios import solicitudes_investigador, uso_suscripciones
 from ..src.repositorios.catalogos import ESCUELAS_UCSM, GENEROS, ODS
-from . import counter, orcid, pure_csv, sushi
+from . import asistente, counter, orcid, pure_csv, sushi
 from .schemas import (
     SushiSyncBody,
     AdminKeyBody,
@@ -145,7 +145,7 @@ def _session_secret():
     return secrets.token_urlsafe(48)
 
 
-app = FastAPI(title="Gestor de Investigación", version="1.3.0")
+app = FastAPI(title="Gestor de Investigación", version="1.4.0")
 app.add_middleware(
     SessionMiddleware,
     secret_key=_session_secret(),
@@ -158,6 +158,10 @@ app.add_middleware(
 if (FRONTEND_DIST / "assets").is_dir():
     app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
 app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
+
+
+# Asistente de primer inicio (solo activo tras instalar con el instalador).
+app.include_router(asistente.router)
 
 
 @app.exception_handler(ErrorConexion)
