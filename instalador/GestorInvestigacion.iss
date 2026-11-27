@@ -1,6 +1,6 @@
 ﻿; Instalador de Windows del Sistema Gestor de Investigación (Inno Setup 6).
 ; Lo compila el workflow .github/workflows/release-windows.yml:
-;   iscc /DVersion=1.5.1 /DOrigen=<carpeta con los archivos> instalador\GestorInvestigacion.iss
+;   iscc /DVersion=1.5.2 /DOrigen=<carpeta con los archivos> instalador\GestorInvestigacion.iss
 ;
 ; Instala por usuario (sin permisos de administrador) en
 ; %LOCALAPPDATA%\Programs\GestorInvestigacion, así config.ini queda en el
