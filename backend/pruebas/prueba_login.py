@@ -44,8 +44,9 @@ def main():
         esperar_error("Coordinador retirado no puede ingresar", coordinadores.autenticar,
                       "retirado.prueba@prueba.edu.pe", "Retirado1!", contiene="retirado")
 
-        paso(escalar("SELECT COUNT(*) FROM coordinador_repositorios WHERE fecha_retiro IS NULL") == 1,
-             "Hay un unico coordinador en funciones (Javier Fernando Angulo Osorio)")
+        paso(escalar("SELECT COUNT(*) FROM coordinador_repositorios "
+                     "WHERE codigo_ucsm = %s AND fecha_retiro IS NULL", (COORD,)) == 1,
+             "El coordinador de prueba (Javier Fernando Angulo Osorio) esta en funciones")
         ok, r = probar("Resumen para la pagina de inicio", coordinadores.resumen, COORD)
         if ok:
             paso(all(isinstance(r[k], int) for k in

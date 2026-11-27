@@ -112,7 +112,7 @@ function useAuth() {
 function Brand() {
   return (
     <Link className="brand" to="/" aria-label="Sistema Gestor de Investigación, inicio">
-      <img className="brand-logo" src="/assets/cris-horizontal.png" alt="Sistema Gestor de Investigación" />
+      <span className="brand-text">Sistema Gestor de Investigación</span>
     </Link>
   )
 }
@@ -120,7 +120,7 @@ function Brand() {
 function SidebarBrand({ to }) {
   return (
     <Link className="sidebar-brand" to={to} aria-label="Sistema Gestor de Investigación, inicio">
-      <img src="/assets/cris-horizontal-claro.png" alt="Sistema Gestor de Investigación" />
+      <span className="sidebar-brand-text">Sistema Gestor de Investigación</span>
     </Link>
   )
 }
