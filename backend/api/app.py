@@ -145,7 +145,7 @@ def _session_secret():
     return secrets.token_urlsafe(48)
 
 
-app = FastAPI(title="Sistema Gestor de Investigación", version="1.5.1")
+app = FastAPI(title="Sistema Gestor de Investigación", version="1.5.2")
 app.add_middleware(
     SessionMiddleware,
     secret_key=_session_secret(),
