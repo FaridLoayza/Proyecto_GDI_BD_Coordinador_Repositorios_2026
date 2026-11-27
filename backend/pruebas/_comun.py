@@ -19,7 +19,7 @@ PAT = "PE-9990001"
 TITULO_HIS = "Publicación de prueba automática"
 CRIS_COD = 2099000101
 CRIS_DNI = "99999801"
-CRIS_CORREO = "cris.prueba.99999801@ucsm.edu.pe"
+CRIS_CORREO = "cris.prueba.99999801@prueba.edu.pe"
 CRIS_PAT = "PE-9990101"
 CRIS_PUBLICACION_ID = "prueba-cris-publicacion-99999801"
 CRIS_TITULO_HIS = "Publicación candidata CRIS de prueba"
@@ -27,7 +27,7 @@ CRIS_TITULO_HIS = "Publicación candidata CRIS de prueba"
 D_INV = dict(
     dni=DNI_INV, nombres="Prueba", apellido_paterno="Automatica", apellido_materno="Test",
     genero="Femenino", fecha_nacimiento="1990-01-15", codigo_ucsm=COD,
-    escuela="Ingeniería de Pruebas", celular=999000001, correo="TEST.Prueba@UCSM.EDU.PE",
+    escuela="Ingeniería de Pruebas", celular=999000001, correo="TEST.Prueba@prueba.edu.pe",
     orcid="0000-0009-9999-9991", scopus_id=9900000001,
     link_cti="https://ctivitae.concytec.gob.pe/appCTIVitae/#/detallesCV/99999901",
     foto="prueba.png", resumen="Registro creado por las pruebas automaticas.",
@@ -41,7 +41,7 @@ D_PAT = dict(
 D_HIS = dict(
     title=TITULO_HIS, publication_year=2025, type="Article", language="Spanish",
     category="Research", volumen="", number_of_pages="", pages="1-10",
-    abstract="Resumen de prueba.", portal_url="https://repositorio.ucsm.edu.pe/handle/test/1",
+    abstract="Resumen de prueba.", portal_url="https://repositorio.prueba.edu.pe/handle/test/1",
     contributors="Automatica Test, Prueba", identifiers="", keywords_groups="Pruebas")
 
 _fallos = 0

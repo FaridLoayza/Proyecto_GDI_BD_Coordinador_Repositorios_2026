@@ -4,8 +4,8 @@ revision por parte del coordinador de repositorios.
 
 CONTENIDO DE ESTA CARPETA
   GestorInvestigacion.exe   Ejecutable del sistema (servidor + interfaz web).
-  Gestor de Investigación.cmd  Archivo de inicio: abre el sistema desde esta carpeta.
-  Gestor de Investigación.url  Acceso directo a la direccion del sistema
+  Sistema Gestor de Investigación.cmd  Archivo de inicio: abre el sistema desde esta carpeta.
+  Sistema Gestor de Investigación.url  Acceso directo a la direccion del sistema
                             (http://127.0.0.1:8000) una vez iniciado.
   config.ini.example        Plantilla de configuracion.
   CREDENCIALES_PRUEBA.txt   Cuentas de prueba (coordinador, investigadores, admin).
@@ -31,9 +31,9 @@ INSTALACION (solo la primera vez)
          redirect_uri = http://127.0.0.1:8000/api/auth/orcid/callback
 
 USO
-  1. Haga doble clic en "Gestor de Investigación.cmd" (o en GestorInvestigacion.exe).
+  1. Haga doble clic en "Sistema Gestor de Investigación.cmd" (o en GestorInvestigacion.exe).
      Se abre una ventana negra (el servidor) y el navegador en
-     http://127.0.0.1:8000. Si el navegador no se abre, use "Gestor de Investigación.url".
+     http://127.0.0.1:8000. Si el navegador no se abre, use "Sistema Gestor de Investigación.url".
   2. Ingrese con las cuentas de CREDENCIALES_PRUEBA.txt.
   3. Para cerrar el sistema: cierre la sesion en el portal y luego cierre la
      ventana negra del servidor.
@@ -42,4 +42,4 @@ PROBLEMAS FRECUENTES
   - "No se encontro config.ini": complete el paso 1 de la instalacion.
   - "No se pudo conectar a PostgreSQL": verifique que el servicio de PostgreSQL
     este iniciado y que la contrasena de config.ini sea la correcta.
-  - El puerto 8000 esta ocupado: cierre otra ventana del Gestor de Investigación.
+  - El puerto 8000 esta ocupado: cierre otra ventana del Sistema Gestor de Investigación.

@@ -1,4 +1,4 @@
-"""Acceso a solicitudes de patente del Gestor de Investigación."""
+"""Acceso a solicitudes de patente del Sistema Gestor de Investigación."""
 from ..db.conexion import consultar_procedimiento, ejecutar_procedimiento
 
 

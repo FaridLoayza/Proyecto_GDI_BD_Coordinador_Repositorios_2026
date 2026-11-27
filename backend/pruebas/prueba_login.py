@@ -14,21 +14,21 @@ def main():
     print("=== Prueba de login del coordinador ===")
     limpiar()
     try:
-        ok, c = probar("Login correcto: jangulo@ucsm.edu.pe",
-                       coordinadores.autenticar, "jangulo@ucsm.edu.pe", "Angulo2026!")
+        ok, c = probar("Login correcto: jangulo@prueba.edu.pe",
+                       coordinadores.autenticar, "jangulo@prueba.edu.pe", "Angulo2026!")
         if ok:
             paso(c["codigo_ucsm"] == COORD and "Angulo" in c["nombre"] and "contrasenia" not in c,
                  f"Devuelve los datos del coordinador sin la contrasenia ({c['nombre']})")
             paso(c["funcion"] == "Coordinador de repositorios",
                  f"Funcion registrada: {c['funcion']}")
         probar("Login sin distinguir mayusculas en el correo",
-               coordinadores.autenticar, "JANGULO@UCSM.EDU.PE", "Angulo2026!")
+               coordinadores.autenticar, "JANGULO@prueba.edu.pe", "Angulo2026!")
         esperar_error("Contrasenia incorrecta", coordinadores.autenticar,
-                      "jangulo@ucsm.edu.pe", "mala", contiene="incorrectos")
+                      "jangulo@prueba.edu.pe", "mala", contiene="incorrectos")
         esperar_error("La contrasenia distingue mayusculas", coordinadores.autenticar,
-                      "jangulo@ucsm.edu.pe", "angulo2026!", contiene="incorrectos")
+                      "jangulo@prueba.edu.pe", "angulo2026!", contiene="incorrectos")
         esperar_error("Correo inexistente", coordinadores.autenticar,
-                      "nadie@ucsm.edu.pe", "Angulo2026!", contiene="incorrectos")
+                      "nadie@prueba.edu.pe", "Angulo2026!", contiene="incorrectos")
         esperar_error("Campos vacios", coordinadores.autenticar, "", "", contiene="ingrese")
 
         # Coordinador retirado: con la clave correcta igual no puede entrar
@@ -39,13 +39,14 @@ def main():
         ejecutar_sentencia(
             "INSERT INTO coordinador_repositorios (codigo_ucsm, dni, fecha_ocupacion_puesto, "
             "correo_electronico, contrasenia, fecha_retiro, funcion, direccion_adscrita) "
-            "VALUES (%s, %s, '2024-01-01', 'retirado.prueba@ucsm.edu.pe', %s, '2025-01-01', "
+            "VALUES (%s, %s, '2024-01-01', 'retirado.prueba@prueba.edu.pe', %s, '2025-01-01', "
             "'Prueba', 'Prueba')", (COD_RET, DNI_RET, generar_hash("Retirado1!")))
         esperar_error("Coordinador retirado no puede ingresar", coordinadores.autenticar,
-                      "retirado.prueba@ucsm.edu.pe", "Retirado1!", contiene="retirado")
+                      "retirado.prueba@prueba.edu.pe", "Retirado1!", contiene="retirado")
 
-        paso(escalar("SELECT COUNT(*) FROM coordinador_repositorios WHERE fecha_retiro IS NULL") == 1,
-             "Hay un unico coordinador en funciones (Javier Fernando Angulo Osorio)")
+        paso(escalar("SELECT COUNT(*) FROM coordinador_repositorios "
+                     "WHERE codigo_ucsm = %s AND fecha_retiro IS NULL", (COORD,)) == 1,
+             "El coordinador de prueba (Javier Fernando Angulo Osorio) esta en funciones")
         ok, r = probar("Resumen para la pagina de inicio", coordinadores.resumen, COORD)
         if ok:
             paso(all(isinstance(r[k], int) for k in

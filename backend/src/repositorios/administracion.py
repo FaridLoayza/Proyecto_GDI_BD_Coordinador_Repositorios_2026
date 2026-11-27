@@ -88,7 +88,7 @@ def guardar_admin(correo, nombre, clave, cfg=None):
 def crear_admin_interactivo():
     """Pide los datos por consola. Lo usan crear_admin.py y GestorInvestigacion.exe --crear-admin."""
     import getpass
-    print("Crear cuenta de administrador del Gestor de Investigación")
+    print("Crear cuenta de administrador del Sistema Gestor de Investigación")
     correo = input("Correo: ").strip()
     nombre = input("Nombre: ").strip()
     clave = getpass.getpass("Contraseña (mínimo 12 caracteres): ")

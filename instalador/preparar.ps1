@@ -1,5 +1,5 @@
 ﻿<#
-  Preparación del Gestor de Investigación (la ejecuta el instalador).
+  Preparación del Sistema Gestor de Investigación (la ejecuta el instalador).
 
   1. Comprueba WSL2 y Docker Desktop. Si faltan, los instala (pide permisos de
      administrador) y, si Windows lo necesita, pide reiniciar. Tras el reinicio
@@ -17,7 +17,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Host.UI.RawUI.WindowTitle = 'Gestor de Investigación - Preparación'
+$Host.UI.RawUI.WindowTitle = 'Sistema Gestor de Investigación - Preparación'
 Add-Type -AssemblyName System.Windows.Forms
 Set-Location $Carpeta
 
@@ -27,7 +27,7 @@ $EnvFile = Join-Path $Carpeta '.env'
 $ConfigFile = Join-Path $Carpeta 'config.ini'
 $Exe = Join-Path $Carpeta 'GestorInvestigacion.exe'
 $DockerUrl = 'https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe'
-$Titulo = 'Gestor de Investigación'
+$Titulo = 'Sistema Gestor de Investigación'
 
 function Paso($texto) { Write-Host ''; Write-Host "==> $texto" -ForegroundColor Green }
 function Aviso($texto, $icono = 'Information') {
@@ -49,7 +49,7 @@ function Pedir-Reinicio {
         -Name 'GestorInvestigacionPreparacion' -Value $comando -PropertyType String -Force | Out-Null
     $respuesta = [System.Windows.Forms.MessageBox]::Show(
         "Se instalaron componentes de Windows necesarios para Docker (WSL2 / Docker Desktop).`n`n" +
-        "Se necesita REINICIAR el equipo para poder usar el Gestor de Investigación.`n" +
+        "Se necesita REINICIAR el equipo para poder usar el Sistema Gestor de Investigación.`n" +
         "Al volver a iniciar sesión, la preparación continuará sola.`n`n¿Reiniciar ahora?",
         $Titulo, 'YesNo', 'Warning')
     if ($respuesta -eq 'Yes') { Restart-Computer -Force }
@@ -109,7 +109,7 @@ try {
         while (-not (Docker-Responde)) {
             if ((Get-Date) -gt $limite) {
                 if (-not (Wsl-Listo)) { Pedir-Reinicio }
-                throw 'Docker Desktop no respondió. Ábralo, acepte sus términos de uso y vuelva a ejecutar el acceso directo "Preparar Gestor de Investigación".'
+                throw 'Docker Desktop no respondió. Ábralo, acepte sus términos de uso y vuelva a ejecutar el acceso directo "Preparar Sistema Gestor de Investigación".'
             }
             Start-Sleep -Seconds 5
         }
@@ -154,11 +154,11 @@ try {
     }
 
     Paso 'Preparación terminada.'
-    Aviso "Todo está listo.`n`nAl abrir el Gestor de Investigación se mostrará la configuración inicial: cambiará la contraseña de la base de datos y podrá registrar sus credenciales de ORCID."
+    Aviso "Todo está listo.`n`nAl abrir el Sistema Gestor de Investigación se mostrará la configuración inicial: cambiará la contraseña de la base de datos y podrá registrar sus credenciales de ORCID."
     exit 0
 }
 catch {
     Write-Host $_ -ForegroundColor Red
-    Aviso "La preparación no pudo completarse:`n`n$($_.Exception.Message)`n`nPuede reintentarla con el acceso directo `"Preparar Gestor de Investigación`" del menú Inicio." 'Error'
+    Aviso "La preparación no pudo completarse:`n`n$($_.Exception.Message)`n`nPuede reintentarla con el acceso directo `"Preparar Sistema Gestor de Investigación`" del menú Inicio." 'Error'
     exit 1
 }

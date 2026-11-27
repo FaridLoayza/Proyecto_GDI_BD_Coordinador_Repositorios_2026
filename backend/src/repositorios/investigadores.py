@@ -28,7 +28,7 @@ def escuelas():
 
 def obtener(codigo):
     """Todos los datos de un investigador (claves iguales a las del formulario) o None."""
-    filas = consultar_procedimiento("sp_obtener_investigador", [u.entero(codigo, "El codigo UCSM")])
+    filas = consultar_procedimiento("sp_obtener_investigador", [u.entero(codigo, "El código institucional")])
     if not filas:
         return None
     d = filas[0]
@@ -65,9 +65,9 @@ def validar_datos(d):
     dni = u.obligatorio(d.get("dni"), "El DNI")
     if len(dni) != 8 or not dni.isdigit():
         raise u.ErrorOperacion("El DNI debe tener exactamente 8 digitos.")
-    codigo = u.entero(d.get("codigo_ucsm"), "El codigo UCSM")
+    codigo = u.entero(d.get("codigo_ucsm"), "El código institucional")
     if not 1000000000 <= codigo <= 9999999999:
-        raise u.ErrorOperacion("El codigo UCSM debe tener 10 digitos.")
+        raise u.ErrorOperacion("El código institucional debe tener 10 digitos.")
     if not d.get("ods"):
         raise u.ErrorOperacion("Debe indicar al menos un ODS.")
 
@@ -77,7 +77,7 @@ def registrar(d, coordinador):
     parametros = [
         u.obligatorio(d.get("dni"), "El DNI"), c["nombres"], c["ap_pat"], c["ap_mat"],
         c["genero"], c["nacimiento"],
-        u.entero(d.get("codigo_ucsm"), "El codigo UCSM"), c["escuela"], c["celular"], c["correo"],
+        u.entero(d.get("codigo_ucsm"), "El código institucional"), c["escuela"], c["celular"], c["correo"],
         c["orcid"], c["scopus"], c["link"], c["resumen"], c["foto"],
         coordinador, c["ods"], c["intereses"],
     ]
@@ -88,7 +88,7 @@ def registrar(d, coordinador):
 def modificar(codigo, d):
     c = _datos_comunes(d)
     parametros = [
-        u.entero(codigo, "El codigo UCSM"), c["nombres"], c["ap_pat"], c["ap_mat"],
+        u.entero(codigo, "El código institucional"), c["nombres"], c["ap_pat"], c["ap_mat"],
         c["genero"], c["nacimiento"], c["escuela"], c["celular"], c["correo"],
         c["orcid"], c["scopus"], c["link"], c["resumen"], c["foto"],
         c["ods"], c["intereses"],
