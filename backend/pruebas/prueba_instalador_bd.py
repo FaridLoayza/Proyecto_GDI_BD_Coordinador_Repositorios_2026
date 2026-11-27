@@ -15,11 +15,11 @@ from backend.database.instalar_bd import (
 
 class InstaladorTests(unittest.TestCase):
     def test_base_vacia_es_destino_valido(self):
-        validar_base_vacia("repositorios_ucsm", 0)
+        validar_base_vacia("repositorios_prueba", 0)
 
     def test_base_con_tablas_se_rechaza_sin_instalar(self):
         with self.assertRaisesRegex(ErrorInstalacion, "no modificó nada"):
-            validar_base_vacia("repositorios_ucsm", 42)
+            validar_base_vacia("repositorios_prueba", 42)
 
     def test_esquema_completo_requiere_42_tablas_y_fuente_pure(self):
         validar_esquema(

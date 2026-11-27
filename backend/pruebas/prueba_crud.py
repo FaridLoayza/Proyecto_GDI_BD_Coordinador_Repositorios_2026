@@ -200,7 +200,7 @@ def flujo_postulacion_cris():
          "https://orcid.org/0000-0009-9999-9101", "Resultado simulado por la prueba"],
     )
     probar(
-        "Registrar verificación manual del código UCSM",
+        "Registrar verificación manual del código institucional",
         ejecutar_procedimiento,
         "sp_registrar_verificacion_solicitud",
         [solicitud_id, 1, "codigo_ucsm", "manual", "requiere_revision", COORD,

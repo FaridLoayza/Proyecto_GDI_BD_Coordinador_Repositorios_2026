@@ -14,8 +14,8 @@ const ODS = [
   'ODS 15: Vida de ecosistemas terrestres', 'ODS 16: Paz, justicia e instituciones sólidas',
   'ODS 17: Alianzas para lograr los objetivos',
 ]
-// Lista cerrada de escuelas profesionales de la UCSM (debe coincidir con
-// ESCUELAS_UCSM en backend/src/repositorios/catalogos.py).
+// Lista cerrada de escuelas profesionales de la universidad (debe coincidir con
+// ESCUELAS en backend/src/repositorios/catalogos.py).
 const ESCUELAS = [
   'Administración de Empresas', 'Arquitectura', 'Ciencia Política y Gobierno',
   'Comunicación Social', 'Contabilidad', 'Derecho', 'Educación Inicial', 'Enfermería',
@@ -111,16 +111,16 @@ function useAuth() {
 
 function Brand() {
   return (
-    <Link className="brand" to="/" aria-label="Gestor de Investigación, inicio">
-      <img className="brand-logo" src="/assets/cris-horizontal.png" alt="Gestor de Investigación" />
+    <Link className="brand" to="/" aria-label="Sistema Gestor de Investigación, inicio">
+      <img className="brand-logo" src="/assets/cris-horizontal.png" alt="Sistema Gestor de Investigación" />
     </Link>
   )
 }
 
 function SidebarBrand({ to }) {
   return (
-    <Link className="sidebar-brand" to={to} aria-label="Gestor de Investigación, inicio">
-      <img src="/assets/cris-horizontal-claro.png" alt="Gestor de Investigación" />
+    <Link className="sidebar-brand" to={to} aria-label="Sistema Gestor de Investigación, inicio">
+      <img src="/assets/cris-horizontal-claro.png" alt="Sistema Gestor de Investigación" />
     </Link>
   )
 }
@@ -202,8 +202,7 @@ function Home() {
   return (
     <section className="home">
       <div className="hero">
-        <p className="eyebrow">Sistema de información de investigación</p>
-        <h1>Gestor de Investigación</h1>
+        <h1>Sistema Gestor de Investigación</h1>
       </div>
       <div className="access-grid">
         <article className="access-card">
@@ -1891,7 +1890,7 @@ function SetupWizard() {
   return (
     <section className="panel setup-panel">
       <p className="eyebrow">Configuración inicial</p>
-      <h1>Bienvenido al Gestor de Investigación</h1>
+      <h1>Bienvenido al Sistema Gestor de Investigación</h1>
       <p className="muted">Antes del primer uso, complete estos pasos. Solo se piden una vez y se guardan en el archivo config.ini de esta computadora.</p>
       <ol className="setup-steps">{pasos.map((nombre, i) => <li key={nombre} className={paso === i + 1 ? 'active' : paso > i + 1 ? 'done' : ''}><span>{i + 1}</span>{nombre}</li>)}</ol>
       {error && <Alert kind="error">{error}</Alert>}

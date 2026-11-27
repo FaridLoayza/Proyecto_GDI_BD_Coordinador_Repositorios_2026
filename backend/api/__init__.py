@@ -1,1 +1,1 @@
-"""API FastAPI del Gestor de Investigación."""
+"""API FastAPI del Sistema Gestor de Investigación."""

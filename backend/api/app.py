@@ -1,4 +1,4 @@
-"""FastAPI para la aplicación React del Gestor de Investigación."""
+"""FastAPI para la aplicación React del Sistema Gestor de Investigación."""
 import configparser
 import csv
 import datetime
@@ -30,7 +30,7 @@ from ..src.repositorios import (
     reportes,
 )
 from ..src.repositorios import solicitudes_investigador, uso_suscripciones
-from ..src.repositorios.catalogos import ESCUELAS_UCSM, GENEROS, ODS
+from ..src.repositorios.catalogos import ESCUELAS, GENEROS, ODS
 from . import asistente, counter, orcid, pure_csv, sushi
 from .schemas import (
     SushiSyncBody,
@@ -145,7 +145,7 @@ def _session_secret():
     return secrets.token_urlsafe(48)
 
 
-app = FastAPI(title="Gestor de Investigación", version="1.5.0")
+app = FastAPI(title="Sistema Gestor de Investigación", version="1.5.1")
 app.add_middleware(
     SessionMiddleware,
     secret_key=_session_secret(),
@@ -223,7 +223,7 @@ def health():
 
 @app.get("/api/catalogs")
 def catalogs():
-    return {"ods": ODS, "generos": GENEROS, "escuelas": ESCUELAS_UCSM}
+    return {"ods": ODS, "generos": GENEROS, "escuelas": ESCUELAS}
 
 
 @app.post("/api/uploads/photo", dependencies=[Depends(require_csrf)])
@@ -438,7 +438,7 @@ def researcher_update_application(body: ApplicationBody, request: Request):
         raise HTTPException(status_code=404, detail="No se encontró la solicitud de esta cuenta.")
     if solicitud["estado"] != "observada":
         raise HTTPException(status_code=409, detail="Solo se pueden corregir solicitudes observadas.")
-    # El DNI y el código UCSM solo se pueden corregir mientras la solicitud
+    # El DNI y el código institucional solo se pueden corregir mientras la solicitud
     # está observada (p. ej. el coordinador indicó que el código es
     # inválido). El procedimiento valida que el nuevo valor no esté en uso
     # por otra cuenta antes de aplicarlo.

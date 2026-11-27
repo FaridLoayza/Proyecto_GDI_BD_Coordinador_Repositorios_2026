@@ -1,4 +1,4 @@
-# Gestor de Investigación - Aplicativo (Grupo 01)
+# Sistema Gestor de Investigación - Aplicativo (Grupo 01)
 
 Aplicativo web para registrar y revisar postulaciones de investigadores, gestionar
 solicitudes de patentes e importar publicaciones de investigación. Utiliza PostgreSQL
@@ -174,8 +174,8 @@ Hay dos cuentas de administrador, independientes del flujo investigador/coordina
 ## Ejecutable de Windows
 
 Cada tag `vX.Y.Z` publica en *Releases* un `.zip` con la carpeta EJECUTABLE:
-`GestorInvestigacion.exe`, `Gestor de Investigación.cmd` (archivo de inicio que funciona desde cualquier
-ruta), `Gestor de Investigación.url` (acceso directo a `http://127.0.0.1:8000`), `config.ini.example`,
+`GestorInvestigacion.exe`, `Sistema Gestor de Investigación.cmd` (archivo de inicio que funciona desde cualquier
+ruta), `Sistema Gestor de Investigación.url` (acceso directo a `http://127.0.0.1:8000`), `config.ini.example`,
 `LEEME.txt`, `CREDENCIALES_PRUEBA.txt` y el SQL de instalación. Solo requiere PostgreSQL 16:
 
 ```cmd

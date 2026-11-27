@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from ..src.repositorios.catalogos import ESCUELAS_UCSM, ODS
+from ..src.repositorios.catalogos import ESCUELAS, ODS
 from .orcid import checksum_valido
 
 
@@ -69,7 +69,7 @@ class ApplicationBody(StrictModel):
     @classmethod
     def escuela_debe_ser_de_la_lista_oficial(cls, value):
         value = value.strip()
-        if value not in ESCUELAS_UCSM:
+        if value not in ESCUELAS:
             raise ValueError(
                 "Seleccione una escuela profesional de la lista oficial."
             )

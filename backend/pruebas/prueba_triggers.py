@@ -18,12 +18,12 @@ from src.db.conexion import conectar, ejecutar_sentencia
 def trg_normalizar():
     print("\n--- A.1 trg_investigador_normalizar (INSERT/UPDATE) ---")
     probar("Registrar investigador con correo en mayusculas", investigadores.registrar, D_INV, COORD)
-    paso(investigadores.obtener(COD)["correo"] == "test.prueba@ucsm.edu.pe",
+    paso(investigadores.obtener(COD)["correo"] == "test.prueba@prueba.edu.pe",
          "INSERT: el correo se guardo en minusculas")
     ejecutar_sentencia("UPDATE investigador SET escuela_profesional = %s, correo_elec = %s "
-                       "WHERE codigo_ucsm = %s", ("   Escuela Test   ", "  MAYUS@UCSM.EDU.PE  ", COD))
+                       "WHERE codigo_ucsm = %s", ("   Escuela Test   ", "  MAYUS@prueba.edu.pe  ", COD))
     f = investigadores.obtener(COD)
-    paso(f["escuela"] == "Escuela Test" and f["correo"] == "mayus@ucsm.edu.pe",
+    paso(f["escuela"] == "Escuela Test" and f["correo"] == "mayus@prueba.edu.pe",
          "UPDATE directo: se quitaron espacios y el correo quedo en minusculas")
 
 

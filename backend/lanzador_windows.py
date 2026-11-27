@@ -84,7 +84,7 @@ def _asegurar_docker():
 def main():
     if "--instalar-bd" in sys.argv[1:]:
         from backend.database import instalar_bd
-        print("Instalación de la base de datos del Gestor de Investigación (esquema + datos de prueba)")
+        print("Instalación de la base de datos del Sistema Gestor de Investigación (esquema + datos de prueba)")
         codigo = instalar_bd.main()
         _pausar()
         sys.exit(codigo)
@@ -107,7 +107,7 @@ def main():
     from backend.api.app import app
 
     url = f"http://{host}:{port}"
-    print(f"Gestor de Investigación en {url}  (cierre esta ventana para detenerlo)")
+    print(f"Sistema Gestor de Investigación en {url}  (cierre esta ventana para detenerlo)")
     threading.Timer(1.5, lambda: webbrowser.open(url)).start()
     uvicorn.run(app, host=host, port=port)
 

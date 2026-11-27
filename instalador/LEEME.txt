@@ -13,7 +13,7 @@ QUÉ HACE EL INSTALADOR
   4. Crea la base de datos con sus tablas y datos de prueba.
 
 PRIMER INICIO
-  Al abrir el Gestor de Investigación por primera vez aparece la configuración
+  Al abrir el Sistema Gestor de Investigación por primera vez aparece la configuración
   inicial en el navegador:
     Paso 1. Cambie la contraseña aleatoria de la base de datos por una propia.
     Paso 2. Escriba los datos de su aplicación de ORCID:
@@ -33,7 +33,7 @@ REQUISITOS
 
 PROBLEMAS FRECUENTES
   - "Docker Desktop no respondió": abra Docker Desktop desde el menú Inicio,
-    acepte sus términos de uso y ejecute "Preparar Gestor de Investigación"
+    acepte sus términos de uso y ejecute "Preparar Sistema Gestor de Investigación"
     desde el menú Inicio.
   - Si la virtualización está desactivada, Docker no podrá iniciar: actívela en
     la configuración de la BIOS/UEFI del equipo.

@@ -22,10 +22,10 @@ ODS = [
 
 GENEROS = ["Femenino", "Masculino"]
 
-# Lista cerrada de escuelas profesionales de la UCSM. Se usa para validar el
+# Lista cerrada de escuelas profesionales de la universidad. Se usa para validar el
 # formulario de postulación: evita que la misma escuela quede escrita de
 # formas distintas por cada investigador.
-ESCUELAS_UCSM = [
+ESCUELAS = [
     "Administración de Empresas",
     "Arquitectura",
     "Ciencia Política y Gobierno",

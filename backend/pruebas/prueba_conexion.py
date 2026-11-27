@@ -36,7 +36,7 @@ def paso(ok, texto):
 
 
 def main():
-    print("=== Prueba de conexion - Repositorios UCSM ===")
+    print("=== Prueba de conexion - Repositorios ===")
     try:
         cfg = leer_configuracion()
         paso(True, f"config.ini leido ({cfg['user']}@{cfg['host']}:{cfg['port']}/{cfg['dbname']})")
