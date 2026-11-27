@@ -36,10 +36,12 @@ function Aviso($texto, $icono = 'Information') {
 
 function Docker-Instalado { [bool](Get-Command docker -ErrorAction SilentlyContinue) -or (Test-Path "$env:ProgramFiles\Docker\Docker\resources\bin\docker.exe") }
 function Docker-Responde {
-    try { & docker info *> $null; return $LASTEXITCODE -eq 0 } catch { return $false }
+    # docker info escribe avisos (WARNING) en stderr; con ErrorActionPreference=Stop
+    # PowerShell 5.1 los trata como error. cmd los descarta y solo se mira el codigo de salida.
+    try { & cmd.exe /c "docker info >nul 2>&1"; return $LASTEXITCODE -eq 0 } catch { return $false }
 }
 function Wsl-Listo {
-    try { & wsl.exe --status *> $null; return $LASTEXITCODE -eq 0 } catch { return $false }
+    try { & cmd.exe /c "wsl.exe --status >nul 2>&1"; return $LASTEXITCODE -eq 0 } catch { return $false }
 }
 
 function Pedir-Reinicio {
