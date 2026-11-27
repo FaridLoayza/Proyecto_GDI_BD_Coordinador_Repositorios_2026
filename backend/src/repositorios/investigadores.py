@@ -1,52 +1,13 @@
 """CRUD de investigadores. Insertar, modificar, dar de baja y reactivar se hacen con
 procedimientos almacenados (sp_registrar/modificar/eliminar/reactivar_investigador);
 aqui solo se preparan los datos. Eliminar es un borrado logico (activo = FALSE)."""
-from ..db.conexion import consultar_dicts, ejecutar_procedimiento
+from ..db.conexion import consultar_procedimiento, ejecutar_procedimiento
 from . import utilidades as u
-
-_SQL_LISTAR = """
-SELECT i.codigo_ucsm,
-       pe.apellido_paterno || ' ' || pe.apellido_materno || ', ' || pe.nombres AS nombre,
-       i.escuela_profesional, i.correo_elec, i.n_celular,
-       i.activo, i.fecha_baja, i.motivo_baja
-FROM investigador i
-JOIN persona pe ON pe.dni = i.dni
-{filtro}
-ORDER BY pe.apellido_paterno, pe.apellido_materno, pe.nombres
-"""
-
-_SQL_OBTENER = """
-SELECT i.codigo_ucsm, pe.dni, pe.nombres, pe.apellido_paterno, pe.apellido_materno,
-       pe.genero, pe.fecha_nacimiento,
-       i.escuela_profesional AS escuela, i.n_celular AS celular, i.correo_elec AS correo,
-       i.pure_person_id, i.pure_estado, i.pure_registrado_por, i.pure_registrado_en,
-       i.activo, i.fecha_baja, i.motivo_baja,
-       fi.codigo_orcid AS orcid, fi.scopus_id, fi.link_cti_vitae AS link_cti,
-       fi.foto_perfil AS foto, fi.resumen_academico AS resumen,
-       COALESCE((SELECT array_agg(o.ods ORDER BY o.ods)
-                   FROM formato_inv_ods o WHERE o.n_formato_inv = fi.n_formato_inv), '{}') AS ods,
-       COALESCE((SELECT array_agg(t.intereses_invest ORDER BY t.intereses_invest)
-                   FROM formato_inv_intereses t WHERE t.n_formato_inv = fi.n_formato_inv), '{}') AS intereses
-FROM investigador i
-JOIN persona pe ON pe.dni = i.dni
-JOIN formato_investigador fi ON fi.codigo_ucsm = i.codigo_ucsm
-WHERE i.codigo_ucsm = %s
-"""
-
 
 def listar_detalle(filtro="", estado="activos"):
     """Diccionarios con los datos del directorio. estado: activos | bajas | todos."""
-    condiciones, parametros = [], []
-    filtro = (filtro or "").strip()
-    if filtro:
-        condiciones.append("(pe.nombres || ' ' || pe.apellido_paterno || ' ' || pe.apellido_materno "
-                           "|| ' ' || i.codigo_ucsm::text) ILIKE %s")
-        parametros.append(f"%{filtro}%")
-    condicion_estado = u.condicion_estado(estado, "i")
-    if condicion_estado:
-        condiciones.append(condicion_estado)
-    where = ("WHERE " + " AND ".join(condiciones)) if condiciones else ""
-    return consultar_dicts(_SQL_LISTAR.format(filtro=where), tuple(parametros) or None)
+    return consultar_procedimiento("sp_listar_investigadores",
+                                   [(filtro or "").strip(), u.estado_valido(estado)])
 
 
 def listar(filtro="", estado="activos"):
@@ -61,14 +22,13 @@ def opciones():
 
 
 def escuelas():
-    filas = consultar_dicts("SELECT DISTINCT escuela_profesional FROM investigador "
-                            "WHERE activo ORDER BY escuela_profesional")
+    filas = consultar_procedimiento("sp_listar_escuelas_activas")
     return [f["escuela_profesional"] for f in filas]
 
 
 def obtener(codigo):
     """Todos los datos de un investigador (claves iguales a las del formulario) o None."""
-    filas = consultar_dicts(_SQL_OBTENER, (u.entero(codigo, "El codigo UCSM"),))
+    filas = consultar_procedimiento("sp_obtener_investigador", [u.entero(codigo, "El codigo UCSM")])
     if not filas:
         return None
     d = filas[0]

@@ -27,6 +27,10 @@ solicitudes de patentes e importar publicaciones de investigación. Utiliza Post
   "reactivar" mediante `sp_eliminar_*` y `sp_reactivar_*` (los registros no se borran).
 - Panel de administrador con CRUD sobre todas las tablas mediante los procedimientos
   `sp_admin_insertar`, `sp_admin_actualizar` y `sp_admin_eliminar`.
+- **Sin SQL en el código Python** (desde la v1.5.0): toda lectura y escritura es un
+  `CALL` a un procedimiento almacenado (96 en total). Las consultas abren un cursor
+  con el resultado (`CALL sp_x(..., 'resultado')` y `FETCH ALL FROM resultado`);
+  ver `consultar_procedimiento` y `Transaccion` en `backend/src/db/conexion.py`.
 - Ejecutable de Windows `GestorInvestigacion.exe` (sección *Ejecutable de Windows*).
 
 Las cuentas de prueba están en [CREDENCIALES_PRUEBA.md](CREDENCIALES_PRUEBA.md).

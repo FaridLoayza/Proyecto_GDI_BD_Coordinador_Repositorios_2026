@@ -1,67 +1,14 @@
 """Acceso a las cuentas, postulaciones y revisiones del esquema CRIS."""
 from psycopg2.extras import Json
 
-from ..db.conexion import ErrorOperacion, consultar_dicts, ejecutar_procedimiento
+from ..db.conexion import ErrorOperacion, consultar_procedimiento, ejecutar_procedimiento
 from ..seguridad import generar_hash, verificar
-
-
-_SQL_AUTENTICAR = """
-SELECT c.id, c.dni, c.codigo_ucsm, c.correo_elec, c.password_hash,
-       c.estado_cuenta, s.id AS solicitud_id, s.estado
-FROM cuenta_usuario c
-JOIN LATERAL (
-    SELECT id, estado
-      FROM solicitud_investigador
-     WHERE cuenta_investigador_id = c.id
-     ORDER BY creado_en DESC, id DESC
-     LIMIT 1
-) s ON TRUE
-WHERE lower(c.correo_elec) = lower(%s)
-"""
-
-_SQL_SOLICITUD = """
-SELECT s.id, s.cuenta_investigador_id, c.dni, c.codigo_ucsm, c.correo_elec,
-       s.estado, s.nombres, s.apellido_paterno, s.apellido_materno, s.genero,
-       s.fecha_nacimiento, s.escuela_profesional, s.n_celular,
-       s.codigo_orcid, s.scopus_id, s.link_cti_vitae, s.resumen_academico,
-       s.foto_referencia, s.version_actual, s.enviada_en, s.creado_en AS creada_en,
-       COALESCE((
-           SELECT array_agg(o.ods ORDER BY o.ods)
-             FROM solicitud_investigador_ods o WHERE o.solicitud_id = s.id
-       ), '{}') AS ods,
-       COALESCE((
-           SELECT array_agg(i.interes ORDER BY i.interes)
-             FROM solicitud_investigador_interes i WHERE i.solicitud_id = s.id
-       ), '{}') AS intereses,
-       (
-           SELECT r.motivo FROM revision_solicitud r
-            WHERE r.solicitud_id = s.id
-            ORDER BY r.resuelto_en DESC, r.id DESC LIMIT 1
-       ) AS ultima_observacion
-FROM solicitud_investigador s
-JOIN cuenta_usuario c ON c.id = s.cuenta_investigador_id
-"""
 
 
 def _adjuntar_historial(solicitud):
     solicitud_id = solicitud["id"]
-    solicitud["verificaciones"] = consultar_dicts("""
-        SELECT v.fuente, v.metodo, v.resultado, v.verificado_por, v.verificado_en,
-               v.referencia_evidencia, v.nota, sv.numero_version
-          FROM verificacion_solicitud v
-          JOIN solicitud_investigador_version sv ON sv.id = v.version_id
-         WHERE v.solicitud_id = %s
-         ORDER BY v.verificado_en, v.id
-    """, (solicitud_id,))
-    solicitud["revisiones"] = consultar_dicts("""
-        SELECT r.resultado, r.motivo, r.resuelto_por, r.resuelto_en,
-               v.numero_version
-          FROM revision_solicitud r
-          JOIN solicitud_investigador_version v
-            ON v.id = r.version_id
-         WHERE r.solicitud_id = %s
-         ORDER BY r.resuelto_en, r.id
-    """, (solicitud_id,))
+    solicitud["verificaciones"] = consultar_procedimiento("sp_verificaciones_solicitud", [solicitud_id])
+    solicitud["revisiones"] = consultar_procedimiento("sp_revisiones_solicitud", [solicitud_id])
     solicitud["datos"] = {
         "dni": solicitud["dni"],
         "codigo_ucsm": solicitud["codigo_ucsm"],
@@ -103,7 +50,7 @@ def autenticar(correo, clave):
     correo = (correo or "").strip()
     if not correo or not clave:
         raise ErrorOperacion("Ingrese su correo y su contraseña.")
-    filas = consultar_dicts(_SQL_AUTENTICAR, (correo,))
+    filas = consultar_procedimiento("sp_login_investigador", [correo])
     if not filas or not verificar(clave, filas[0]["password_hash"]):
         raise ErrorOperacion("Correo o contraseña incorrectos.")
     cuenta = filas[0]
@@ -115,34 +62,23 @@ def autenticar(correo, clave):
     return cuenta
 
 
-def obtener(solicitud_id):
-    filas = consultar_dicts(_SQL_SOLICITUD + " WHERE s.id = %s", (int(solicitud_id),))
+def _obtener(solicitud_id=None, cuenta_id=None):
+    filas = consultar_procedimiento("sp_obtener_solicitud_investigador",
+                                    [solicitud_id, cuenta_id], ["bigint", "bigint"])
     return _adjuntar_historial(filas[0]) if filas else None
+
+
+def obtener(solicitud_id):
+    return _obtener(solicitud_id=int(solicitud_id))
 
 
 def obtener_por_cuenta(cuenta_id):
-    filas = consultar_dicts(
-        _SQL_SOLICITUD
-        + " WHERE s.cuenta_investigador_id = %s"
-        + " ORDER BY s.creado_en DESC, s.id DESC LIMIT 1",
-        (int(cuenta_id),),
-    )
-    return _adjuntar_historial(filas[0]) if filas else None
+    """Ultima postulacion de la cuenta."""
+    return _obtener(cuenta_id=int(cuenta_id))
 
 
 def listar():
-    filas = consultar_dicts("""
-        SELECT s.id, c.correo_elec, c.dni, c.codigo_ucsm, s.estado,
-               s.enviada_en AS creada_en,
-               s.nombres, s.apellido_paterno, s.apellido_materno, s.codigo_orcid,
-               s.scopus_id, s.version_actual
-          FROM solicitud_investigador s
-          JOIN cuenta_usuario c ON c.id = s.cuenta_investigador_id
-         WHERE s.estado IN ('pendiente_revision', 'observada')
-         ORDER BY CASE s.estado WHEN 'pendiente_revision' THEN 0 ELSE 1 END,
-                  s.enviada_en, s.id
-    """)
-    return filas
+    return consultar_procedimiento("sp_listar_solicitudes_investigador")
 
 
 def actualizar(solicitud, datos):
@@ -180,14 +116,7 @@ def registrar_verificacion(solicitud_id, version, fuente, metodo, resultado,
 
 
 def perfiles_pure_pendientes():
-    return consultar_dicts("""
-        SELECT i.codigo_ucsm, p.nombres, p.apellido_paterno, p.apellido_materno,
-               i.correo_elec, i.pure_estado
-          FROM investigador i
-          JOIN persona p ON p.dni = i.dni
-         WHERE i.pure_estado = 'pendiente_manual' AND i.activo
-         ORDER BY p.apellido_paterno, p.nombres
-    """)
+    return consultar_procedimiento("sp_listar_pure_pendientes")
 
 
 def registrar_pure(codigo_ucsm, pure_person_id, coordinador):

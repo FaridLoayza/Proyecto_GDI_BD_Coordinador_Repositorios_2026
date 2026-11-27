@@ -1,9 +1,11 @@
 """Cuenta de administrador y CRUD genérico sobre las tablas del portal.
 
 Seguridad:
-- Los nombres de tablas y columnas se toman SOLO del catálogo de PostgreSQL
-  (esquema public); lo que envía el usuario se compara contra esa lista y se
-  inserta con psycopg2.sql.Identifier, nunca concatenado.
+- Todo pasa por procedimientos (CALL): el catálogo de tablas y columnas
+  (sp_admin_listar_tablas, sp_admin_describir_tabla), la lectura de filas
+  (sp_admin_listar_filas, sp_admin_contar_filas) y la escritura. Lo que envía
+  el usuario se compara contra el catálogo y la base escapa cada identificador
+  con format('%I').
 - Insertar, modificar y eliminar se hacen con los procedimientos
   sp_admin_insertar, sp_admin_actualizar y sp_admin_eliminar; los valores
   viajan en JSONB y la base los convierte al tipo real de cada columna.
@@ -21,7 +23,6 @@ import re
 import uuid
 
 import psycopg2
-from psycopg2 import sql
 from psycopg2.extras import Json
 
 from ..db.conexion import (
@@ -29,8 +30,8 @@ from ..db.conexion import (
     _mensaje_operacion,
     carpeta_base,
     conectar,
-    consultar_dicts,
-    ejecutar_sentencia,
+    consultar_procedimiento,
+    ejecutar_procedimiento,
     leer_configuracion,
 )
 from ..seguridad import generar_hash, verificar
@@ -46,19 +47,12 @@ class NoEncontrado(ErrorOperacion):
 
 # --- Cuenta de administrador -------------------------------------------------
 
-_SQL_LOGIN = """
-SELECT id, correo_elec, nombre, password_hash, estado_cuenta
-  FROM cuenta_usuario
- WHERE rol = 'administrador' AND lower(btrim(correo_elec)) = lower(btrim(%s))
-"""
-
-
 def autenticar(correo, clave, cfg=None):
     correo = (correo or "").strip()
     if not correo or not clave:
         raise ErrorOperacion("Ingrese su correo y su contraseña.")
     try:
-        filas = consultar_dicts(_SQL_LOGIN, (correo,), cfg)
+        filas = consultar_procedimiento("sp_login_administrador", [correo], cfg=cfg)
     except ErrorOperacion as exc:
         if "cuenta_usuario" in str(exc):
             raise ErrorOperacion(
@@ -71,17 +65,6 @@ def autenticar(correo, clave, cfg=None):
     if admin["estado_cuenta"] != "activa":
         raise ErrorOperacion("Esta cuenta de administrador está desactivada.")
     return {"id": admin["id"], "correo": admin["correo_elec"], "nombre": admin["nombre"]}
-
-
-_SQL_GUARDAR_ADMIN = """
-INSERT INTO cuenta_usuario (rol, correo_elec, nombre, password_hash)
-VALUES ('administrador', lower(btrim(%s)), btrim(%s), %s)
-ON CONFLICT (rol, lower(btrim(correo_elec))) DO UPDATE
-   SET nombre = EXCLUDED.nombre,
-       password_hash = EXCLUDED.password_hash,
-       estado_cuenta = 'activa',
-       actualizado_en = CURRENT_TIMESTAMP
-"""
 
 
 def validar_datos_admin(correo, nombre, clave, confirmacion):
@@ -99,7 +82,7 @@ def validar_datos_admin(correo, nombre, clave, confirmacion):
 
 def guardar_admin(correo, nombre, clave, cfg=None):
     """Crea la cuenta o, si el correo existe, actualiza nombre y contraseña y la reactiva."""
-    ejecutar_sentencia(_SQL_GUARDAR_ADMIN, (correo, nombre, generar_hash(clave)), cfg)
+    ejecutar_procedimiento("sp_guardar_administrador", [correo, nombre, generar_hash(clave)], cfg=cfg)
 
 
 def crear_admin_interactivo():
@@ -143,40 +126,13 @@ def configuracion_crud():
 
 # --- Catálogo ------------------------------------------------------------------
 
-_SQL_TABLAS = """
-SELECT c.relname AS nombre, GREATEST(c.reltuples, 0)::BIGINT AS filas_estimadas
-  FROM pg_class c
-  JOIN pg_namespace n ON n.oid = c.relnamespace
- WHERE n.nspname = 'public' AND c.relkind = 'r'
- ORDER BY c.relname
-"""
-
-_SQL_COLUMNAS = """
-SELECT a.attname AS nombre,
-       format_type(a.atttypid, a.atttypmod) AS tipo,
-       NOT a.attnotnull AS nullable,
-       pg_get_expr(d.adbin, d.adrelid) AS por_defecto,
-       a.attidentity AS identidad,
-       a.attgenerated AS generada,
-       COALESCE(a.attnum = ANY (i.indkey), FALSE) AS clave_primaria
-  FROM pg_attribute a
-  JOIN pg_class c ON c.oid = a.attrelid
-  JOIN pg_namespace n ON n.oid = c.relnamespace
-  LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
-  LEFT JOIN pg_index i ON i.indrelid = c.oid AND i.indisprimary
- WHERE n.nspname = 'public' AND c.relname = %s
-   AND a.attnum > 0 AND NOT a.attisdropped
- ORDER BY a.attnum
-"""
-
-
 def listar_tablas(cfg=None):
-    return consultar_dicts(_SQL_TABLAS, None, cfg)
+    return consultar_procedimiento("sp_admin_listar_tablas", cfg=cfg)
 
 
 def describir(tabla, cfg=None):
     """Columnas de la tabla (o NoEncontrado si no es una tabla de public)."""
-    columnas = consultar_dicts(_SQL_COLUMNAS, (tabla,), cfg)
+    columnas = consultar_procedimiento("sp_admin_describir_tabla", [tabla], cfg=cfg)
     if not columnas:
         raise NoEncontrado(f"No existe la tabla '{tabla}'.")
     for col in columnas:
@@ -245,54 +201,28 @@ def _validar_clave(desc, clave):
     return pk
 
 
-def _ejecutar(consulta, parametros, cfg, devolver=True):
-    conn = conectar(cfg or configuracion_crud())
-    try:
-        with conn.cursor() as cur:
-            cur.execute(consulta, parametros)
-            columnas = [d[0] for d in cur.description] if cur.description else []
-            filas = cur.fetchall() if devolver and cur.description else []
-            afectadas = cur.rowcount
-        conn.commit()
-        return columnas, filas, afectadas
-    except psycopg2.Error as exc:
-        conn.rollback()
-        raise ErrorOperacion(_mensaje_operacion(exc)) from exc
-    finally:
-        conn.close()
-
-
 # --- CRUD ----------------------------------------------------------------------
 
 def listar_filas(tabla, pagina=1, tamano=25, buscar=None, cfg=None):
     desc = describir(tabla, cfg)
     pagina = max(1, int(pagina))
     tamano = min(max(1, int(tamano)), TAMANO_MAXIMO)
-    ident = sql.Identifier(tabla)
-    filtro = sql.SQL("")
-    parametros = []
-    if buscar and buscar.strip():
-        filtro = sql.SQL(" WHERE t::text ILIKE %s")
-        parametros.append(f"%{buscar.strip()}%")
+    buscar = (buscar or "").strip() or None
     orden = desc["clave_primaria"] or [desc["columnas"][0]["nombre"]]
-    consulta = sql.SQL(
-        "SELECT t.*, COUNT(*) OVER () AS __total FROM {tabla} AS t{filtro} "
-        "ORDER BY {orden} LIMIT %s OFFSET %s"
-    ).format(
-        tabla=ident, filtro=filtro,
-        orden=sql.SQL(", ").join(sql.Identifier("t", c) for c in orden),
-    )
-    columnas, filas, _ = _ejecutar(consulta, parametros + [tamano, (pagina - 1) * tamano], cfg)
-    total = filas[0][-1] if filas else 0
+    cfg = cfg or configuracion_crud()
+    filas = consultar_procedimiento(
+        "sp_admin_listar_filas", [tabla, buscar, orden, tamano, (pagina - 1) * tamano],
+        [None, "text", "text[]", None, None], cfg=cfg)
+    total = filas[0]["total"] if filas else 0
     if not filas and pagina > 1:
-        conteo = sql.SQL("SELECT COUNT(*) FROM {tabla} AS t{filtro}").format(tabla=ident, filtro=filtro)
-        total = _ejecutar(conteo, parametros, cfg)[1][0][0]
-    columnas = columnas[:-1]
+        total = consultar_procedimiento("sp_admin_contar_filas", [tabla, buscar],
+                                        [None, "text"], cfg=cfg)[0]["total"]
+    nombres = [c["nombre"] for c in desc["columnas"]]
     return {
         "tabla": tabla,
         "columnas": desc["columnas"],
         "clave_primaria": desc["clave_primaria"],
-        "filas": [_fila_json(columnas, fila[:-1]) for fila in filas],
+        "filas": [_fila_json(nombres, [f["fila"].get(n) for n in nombres]) for f in filas],
         "total": total,
         "pagina": pagina,
         "tamano": tamano,
